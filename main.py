@@ -1,6 +1,10 @@
 """
-main.py — OmniRoute Bridge v2.1
-New: Telegram notification endpoints + toggle
+main.py — OmniRoute v2.2
+New endpoints:
+  POST /trade-modify          — SL/TP sync from Master EA
+  GET/PUT /slaves/{id}/protection — per-slave protection config
+  POST /slaves/{id}/protection/preset — apply a named preset
+  GET  /protection/presets    — list all built-in risk presets
 """
 
 import asyncio
@@ -18,9 +22,10 @@ from fastapi.middleware.cors import CORSMiddleware
 import database as db
 import notifier
 from models import (
-    AccountRole, AddAccountRequest, LinkRequest,
-    MasterAccount, SlaveAccount, TradeSignal, UnlinkRequest,
+    AccountRole, AddAccountRequest, LinkRequest, MasterAccount,
+    ModifySignal, SlaveAccount, TradeProtection, TradeSignal, UnlinkRequest,
 )
+from protection import RISK_PRESETS
 from router import CopyRouter
 from config import settings
 
@@ -37,11 +42,11 @@ router = CopyRouter()
 class WSManager:
     def __init__(self):
         self.active: list[WebSocket] = []
-    async def connect(self, ws: WebSocket):
+    async def connect(self, ws):
         await ws.accept(); self.active.append(ws)
-    def disconnect(self, ws: WebSocket):
+    def disconnect(self, ws):
         if ws in self.active: self.active.remove(ws)
-    async def broadcast(self, data: dict):
+    async def broadcast(self, data):
         dead = []
         for ws in self.active:
             try: await ws.send_text(json.dumps(data, default=str))
@@ -53,7 +58,7 @@ ws_manager = WSManager()
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    logger.info("🚀 OmniRoute Bridge starting...")
+    logger.info("🚀 OmniRoute v2.2 starting...")
     db.init_db()
     await router.startup()
     async def _push():
@@ -63,11 +68,10 @@ async def lifespan(app: FastAPI):
                 await ws_manager.broadcast({"type": "status", "data": router.get_full_status()})
     asyncio.create_task(_push())
     yield
-    logger.info("🛑 OmniRoute shutting down...")
     await router.shutdown()
 
 
-app = FastAPI(title="OmniRoute Bridge", version="2.1.0", lifespan=lifespan)
+app = FastAPI(title="OmniRoute Bridge", version="2.2.0", lifespan=lifespan)
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_credentials=True, allow_methods=["*"], allow_headers=["*"])
 
 
@@ -83,7 +87,8 @@ async def timing(request: Request, call_next):
 
 @app.get("/health", tags=["Health"])
 async def health():
-    return {"status": "healthy", "app": "OmniRoute", "masters": len(router.masters), "slaves": len(router.slaves), "timestamp": datetime.utcnow().isoformat()}
+    return {"status": "healthy", "app": "OmniRoute", "version": "2.2.0",
+            "masters": len(router.masters), "slaves": len(router.slaves)}
 
 
 # ── Trade signals ─────────────────────────────────────────────────────────────
@@ -94,7 +99,12 @@ async def trade_signal(signal: TradeSignal, background_tasks: BackgroundTasks):
     if signal.magic_number not in router._magic_index:
         raise HTTPException(404, f"No master for magic_number={signal.magic_number}")
     background_tasks.add_task(router.route_signal, signal, t0)
-    return {"status": "accepted", "signal_id": signal.signal_id, "magic_number": signal.magic_number, "master_id": router._magic_index.get(signal.magic_number), "bridge_latency_ms": round((time.perf_counter()-t0)*1000, 2)}
+    return {
+        "status": "accepted", "signal_id": signal.signal_id,
+        "magic_number": signal.magic_number,
+        "master_id": router._magic_index.get(signal.magic_number),
+        "bridge_latency_ms": round((time.perf_counter()-t0)*1000, 2),
+    }
 
 
 @app.post("/trade-close", tags=["Trading"])
@@ -103,17 +113,48 @@ async def trade_close(magic_number: int, symbol: str, background_tasks: Backgrou
     return {"status": "close_dispatched", "magic_number": magic_number, "symbol": symbol}
 
 
-# ── Unified account ───────────────────────────────────────────────────────────
+@app.post("/trade-modify", tags=["Trading"])
+async def trade_modify(modify: ModifySignal, background_tasks: BackgroundTasks):
+    """
+    Called by the Master EA when a position's SL or TP is changed.
+    Routes the modification to all linked slaves, applying per-slave
+    SL/TP scaling and offset transformations.
+
+    MQL5 snippet to call this endpoint:
+      OnTradeTransaction → TRADE_TRANSACTION_POSITION
+      payload: {magic_number, symbol, new_sl, new_tp, master_price}
+    """
+    if modify.magic_number not in router._magic_index:
+        raise HTTPException(404, f"No master for magic_number={modify.magic_number}")
+    background_tasks.add_task(router.route_modify, modify)
+    return {
+        "status": "modify_dispatched",
+        "magic_number": modify.magic_number,
+        "symbol": modify.symbol,
+        "new_sl": modify.new_sl,
+        "new_tp": modify.new_tp,
+    }
+
+
+# ── Accounts ──────────────────────────────────────────────────────────────────
 
 @app.post("/account", tags=["Accounts"])
 async def add_account(req: AddAccountRequest):
     if req.role == AccountRole.MASTER:
         if req.magic_number is None:
             raise HTTPException(400, "magic_number required for master")
-        account = MasterAccount(label=req.label, login=req.login, password=req.password, server=req.server, terminal_path=req.terminal_path, magic_number=req.magic_number, symbol_map=req.symbol_map)
+        account = MasterAccount(
+            label=req.label, login=req.login, password=req.password, server=req.server,
+            terminal_path=req.terminal_path, magic_number=req.magic_number, symbol_map=req.symbol_map,
+        )
         return await router.add_master(account)
     else:
-        account = SlaveAccount(label=req.label, login=req.login, password=req.password, server=req.server, terminal_path=req.terminal_path, lot_sizing_mode=req.lot_sizing_mode, fixed_lot=req.fixed_lot, multiplier=req.multiplier, max_lot=req.max_lot, min_lot=req.min_lot, max_open_trades=req.max_open_trades)
+        account = SlaveAccount(
+            label=req.label, login=req.login, password=req.password, server=req.server,
+            terminal_path=req.terminal_path, lot_sizing_mode=req.lot_sizing_mode,
+            fixed_lot=req.fixed_lot, multiplier=req.multiplier, max_lot=req.max_lot,
+            min_lot=req.min_lot, max_open_trades=req.max_open_trades, protection=req.protection,
+        )
         return await router.add_slave(account)
 
 
@@ -147,6 +188,60 @@ async def remove_slave(account_id: str):
     return result
 
 
+# ── Protection endpoints ──────────────────────────────────────────────────────
+
+@app.get("/slaves/{account_id}/protection", tags=["Protection"])
+async def get_protection(account_id: str):
+    if account_id not in router.slaves:
+        raise HTTPException(404, f"Slave {account_id} not found")
+    prot = router.slaves[account_id].account.protection
+    return {"account_id": account_id, "protection": prot.model_dump()}
+
+
+@app.put("/slaves/{account_id}/protection", tags=["Protection"])
+async def update_protection(account_id: str, protection: TradeProtection):
+    """Update full protection config for a slave."""
+    result = router.update_protection(account_id, protection)
+    if result["status"] == "not_found":
+        raise HTTPException(404)
+    return result
+
+
+@app.patch("/slaves/{account_id}/protection", tags=["Protection"])
+async def patch_protection(account_id: str, updates: dict):
+    """
+    Partial update — only send the fields you want to change.
+    Example: {"risk_multiplier": 0.5, "slippage_max": 2.0}
+    """
+    if account_id not in router.slaves:
+        raise HTTPException(404)
+    current = router.slaves[account_id].account.protection.model_dump()
+    current.update(updates)
+    new_prot = TradeProtection.model_validate(current)
+    result = router.update_protection(account_id, new_prot)
+    return result
+
+
+@app.post("/slaves/{account_id}/protection/preset", tags=["Protection"])
+async def apply_preset(account_id: str, preset_name: str):
+    """
+    Apply a named risk preset. Available: ultra_safe, conservative, default, aggressive, no_protection
+    """
+    if account_id not in router.slaves:
+        raise HTTPException(404, f"Slave {account_id} not found")
+    if preset_name not in RISK_PRESETS:
+        raise HTTPException(400, f"Unknown preset '{preset_name}'. Available: {list(RISK_PRESETS.keys())}")
+    preset = RISK_PRESETS[preset_name]
+    result = router.update_protection(account_id, preset)
+    return {"status": "preset_applied", "preset": preset_name, "account_id": account_id, "protection": preset.model_dump()}
+
+
+@app.get("/protection/presets", tags=["Protection"])
+async def list_presets():
+    """List all built-in risk profile presets."""
+    return {name: p.model_dump() for name, p in RISK_PRESETS.items()}
+
+
 # ── Links ─────────────────────────────────────────────────────────────────────
 
 @app.post("/link", tags=["Relations"])
@@ -175,52 +270,33 @@ async def update_symbol_map(mapping: dict[str, str]):
 
 @app.get("/telegram/config", tags=["Telegram"])
 async def get_telegram_config():
-    """Return current Telegram config (token masked)."""
     token = settings.telegram_bot_token
-    return {
-        "enabled":    settings.telegram_enabled,
-        "configured": bool(token and settings.telegram_chat_id),
-        "bot_token_set": bool(token),
-        "chat_id_set":   bool(settings.telegram_chat_id),
-        "token_preview": f"...{token[-8:]}" if token else "not set",
-    }
-
+    return {"enabled": settings.telegram_enabled, "configured": bool(token and settings.telegram_chat_id),
+            "bot_token_set": bool(token), "chat_id_set": bool(settings.telegram_chat_id),
+            "token_preview": f"...{token[-8:]}" if token else "not set"}
 
 @app.patch("/telegram/config", tags=["Telegram"])
 async def update_telegram_config(payload: dict):
-    """
-    Update Telegram settings at runtime.
-    Accepted keys: enabled (bool), bot_token (str), chat_id (str)
-    """
-    if "enabled" in payload:
-        settings.telegram_enabled = bool(payload["enabled"])
-    if "bot_token" in payload and payload["bot_token"]:
-        settings.telegram_bot_token = str(payload["bot_token"])
-    if "chat_id" in payload and payload["chat_id"]:
-        settings.telegram_chat_id = str(payload["chat_id"])
+    if "enabled"   in payload: settings.telegram_enabled    = bool(payload["enabled"])
+    if "bot_token" in payload and payload["bot_token"]: settings.telegram_bot_token = str(payload["bot_token"])
+    if "chat_id"   in payload and payload["chat_id"]:   settings.telegram_chat_id   = str(payload["chat_id"])
     return {"status": "updated", "enabled": settings.telegram_enabled}
-
 
 @app.post("/telegram/test", tags=["Telegram"])
 async def test_telegram():
-    """Send a test message to verify the Telegram integration."""
     if not settings.telegram_bot_token or not settings.telegram_chat_id:
-        raise HTTPException(400, "Bot token and chat ID must be configured before testing")
+        raise HTTPException(400, "Configure bot token and chat ID first")
     success = await notifier.send_test_message()
-    if success:
-        return {"status": "sent", "message": "Test message delivered to Telegram ✓"}
-    else:
-        raise HTTPException(500, "Failed to send test message — check bot token and chat ID")
-
+    if success: return {"status": "sent"}
+    raise HTTPException(500, "Failed to send — check token and chat ID")
 
 @app.patch("/telegram/toggle", tags=["Telegram"])
 async def toggle_telegram(enabled: bool):
-    """Quick toggle endpoint for the dashboard switch."""
     settings.telegram_enabled = enabled
-    return {"status": "updated", "telegram_enabled": settings.telegram_enabled}
+    return {"telegram_enabled": settings.telegram_enabled}
 
 
-# ── Status / logs ─────────────────────────────────────────────────────────────
+# ── Status / Logs ─────────────────────────────────────────────────────────────
 
 @app.get("/status", tags=["Monitoring"])
 async def get_status(): return router.get_full_status()

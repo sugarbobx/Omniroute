@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8"/>
 <meta name="viewport" content="width=device-width,initial-scale=1.0"/>
-<title>OmniRoute — Multi-Master Trade Copier</title>
+<title>OmniRoute v2.2 — Trade Protection</title>
 <link rel="preconnect" href="https://fonts.googleapis.com"/>
 <link href="https://fonts.googleapis.com/css2?family=Geist+Mono:wght@300;400;500;600;700&family=Instrument+Sans:wght@400;500;600;700&display=swap" rel="stylesheet"/>
 <style>
@@ -119,7 +119,7 @@ select.fi option{background:var(--bg2);}
 .content{display:flex;flex-direction:column;overflow:hidden;background:rgba(5,7,10,.7);}
 
 /* stat bar */
-.stat-bar{display:grid;grid-template-columns:repeat(5,1fr);border-bottom:1px solid var(--border);background:rgba(8,12,18,.85);backdrop-filter:blur(8px);}
+.stat-bar{display:grid;grid-template-columns:repeat(6,1fr);border-bottom:1px solid var(--border);background:rgba(8,12,18,.85);backdrop-filter:blur(8px);}
 .stat-cell{padding:14px 18px;border-right:1px solid var(--border);display:flex;flex-direction:column;gap:4px;}
 .stat-cell:last-child{border-right:none;}
 .stat-label{font-family:var(--mono);font-size:9px;color:var(--text3);text-transform:uppercase;letter-spacing:.8px;}
@@ -300,6 +300,50 @@ select.fi option{background:var(--bg2);}
 .tg-preview .tg-green{color:#3fb950;}
 .tg-preview .tg-red{color:#f85149;}
 .tg-preview .tg-blue{color:#58a6ff;}
+
+/* ── PROTECTION PAGE ────────────────────────────────────────────────── */
+.protection-page{overflow-y:auto;padding:20px;display:flex;flex-direction:column;gap:16px;}
+.prot-slave-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(380px,1fr));gap:16px;align-content:start;}
+.prot-card{background:rgba(12,16,24,.9);border:1px solid var(--border);border-radius:var(--r2);overflow:hidden;transition:border-color .2s;}
+.prot-card:hover{border-color:var(--border2);}
+.prot-card-head{padding:14px 16px;border-bottom:1px solid var(--border);display:flex;align-items:center;justify-content:space-between;background:rgba(8,12,18,.6);}
+.prot-card-title{display:flex;align-items:center;gap:10px;font-weight:600;font-size:13px;}
+.prot-card-body{padding:16px;}
+.prot-feature{background:var(--bg3);border:1px solid var(--border);border-radius:8px;padding:12px;margin-bottom:10px;}
+.prot-feature:last-child{margin-bottom:0;}
+.prot-feature-head{display:flex;align-items:center;justify-content:space-between;margin-bottom:10px;}
+.prot-feature-title{font-family:var(--mono);font-size:10px;font-weight:600;text-transform:uppercase;letter-spacing:.6px;display:flex;align-items:center;gap:7px;}
+.slider-row{display:flex;align-items:center;gap:10px;margin-bottom:7px;}
+.slider-lbl{font-family:var(--mono);font-size:10px;color:var(--text3);width:100px;flex-shrink:0;}
+.slider-input{flex:1;-webkit-appearance:none;background:var(--border);border:none;border-radius:2px;height:3px;outline:none;cursor:pointer;}
+.slider-input::-webkit-slider-thumb{-webkit-appearance:none;width:14px;height:14px;border-radius:50%;background:var(--blue);box-shadow:0 0 8px rgba(0,112,243,.5);cursor:pointer;}
+.slider-val{font-family:var(--mono);font-size:11px;color:var(--blue-bright);width:56px;text-align:right;flex-shrink:0;font-weight:600;}
+.mode-pills{display:flex;gap:4px;flex-wrap:wrap;margin-bottom:10px;}
+.mode-pill{padding:3px 10px;border-radius:99px;font-family:var(--mono);font-size:10px;cursor:pointer;border:1px solid var(--border);background:transparent;color:var(--text3);transition:all .15s;}
+.mode-pill.active{background:var(--blue);border-color:var(--blue);color:#fff;box-shadow:0 0 10px rgba(0,112,243,.4);}
+.mode-pill:hover:not(.active){border-color:var(--blue);color:var(--blue);}
+.preset-grid{display:flex;gap:5px;flex-wrap:wrap;margin-bottom:14px;}
+.preset-btn{padding:4px 11px;border-radius:99px;font-family:var(--mono);font-size:10px;cursor:pointer;border:1px solid var(--border);background:transparent;color:var(--text2);transition:all .15s;}
+.preset-btn:hover{border-color:var(--blue);color:var(--blue);}
+.preset-btn.ultra_safe{border-color:rgba(0,214,143,.35);color:var(--green);}
+.preset-btn.conservative{border-color:rgba(0,112,243,.35);color:var(--blue-bright);}
+.preset-btn.aggressive{border-color:rgba(255,173,13,.35);color:var(--amber);}
+.preset-btn.no_protection{border-color:rgba(255,59,92,.35);color:var(--red);}
+.action-row{display:flex;gap:6px;margin-top:6px;}
+.action-opt{display:flex;align-items:center;gap:5px;padding:4px 10px;border-radius:5px;border:1px solid var(--border);cursor:pointer;font-family:var(--mono);font-size:10px;color:var(--text3);transition:all .15s;}
+.action-opt.active-cancel{border-color:rgba(255,59,92,.4);color:var(--red);background:rgba(255,59,92,.06);}
+.action-opt.active-anyway{border-color:rgba(255,173,13,.4);color:var(--amber);background:rgba(255,173,13,.06);}
+.prot-save-btn{width:100%;margin-top:12px;}
+.sync-mode-grid{display:grid;grid-template-columns:repeat(2,1fr);gap:4px;margin-bottom:8px;}
+.sync-mode-opt{padding:5px 8px;border-radius:5px;border:1px solid var(--border);cursor:pointer;font-family:var(--mono);font-size:10px;color:var(--text3);text-align:center;transition:all .15s;}
+.sync-mode-opt.active{border-color:var(--blue);color:var(--blue-bright);background:var(--blue-glow2);}
+.sync-mode-opt:hover:not(.active){border-color:var(--border2);color:var(--text2);}
+.prot-summary{display:flex;flex-wrap:wrap;gap:5px;margin-bottom:10px;}
+.prot-chip{font-family:var(--mono);font-size:9px;padding:2px 7px;border-radius:3px;}
+.prot-chip-slip{background:rgba(0,112,243,.1);color:var(--blue-bright);border:1px solid rgba(0,112,243,.2);}
+.prot-chip-lot{background:rgba(0,214,143,.08);color:var(--green);border:1px solid rgba(0,214,143,.15);}
+.prot-chip-sltp{background:rgba(167,139,250,.08);color:#a78bfa;border:1px solid rgba(167,139,250,.2);}
+.prot-chip-off{background:var(--bg3);color:var(--text3);border:1px solid var(--border);}
 </style>
 </head>
 <body>
@@ -314,7 +358,7 @@ select.fi option{background:var(--bg2);}
   <div style="display:flex;align-items:center;gap:12px;">
     <div class="logo-mark" style="width:32px;height:32px;font-size:13px;border-radius:8px;background:linear-gradient(135deg,#0070f3,#0040c0);box-shadow:0 0 24px rgba(0,112,243,.5);">OR</div>
     <span class="logo-text">Omni<span>Route</span></span>
-    <span class="logo-version">v2.1</span>
+    <span class="logo-version">v2.2</span>
   </div>
   <div class="header-right">
     <div class="hstat"><span class="hstat-label">Masters</span><span class="hstat-val" id="h-masters" style="color:var(--blue-bright)">—</span></div>
@@ -469,11 +513,13 @@ select.fi option{background:var(--bg2);}
     <div class="stat-cell"><span class="stat-label">Copied Today</span><span class="stat-value" id="s-copied" style="color:var(--green)">—</span></div>
     <div class="stat-cell"><span class="stat-label">Failed Today</span><span class="stat-value" id="s-failed" style="color:var(--red)">—</span></div>
     <div class="stat-cell"><span class="stat-label">Avg Latency</span><span class="stat-value" id="s-lat" style="color:var(--amber)">—</span></div>
+    <div class="stat-cell" style="grid-column:span 1;"><span class="stat-label">Blocked Today</span><span class="stat-value" id="s-blocked" style="color:#a78bfa">—</span></div>
   </div>
 
   <!-- Main nav tabs -->
   <div class="main-tabs">
     <div class="main-tab active" id="maintab-dashboard" onclick="switchMainTab('dashboard')">⬛ Dashboard</div>
+    <div class="main-tab" id="maintab-protection" onclick="switchMainTab('protection')">🛡 Protection</div>
     <div class="main-tab" id="maintab-settings" onclick="switchMainTab('settings')">⚙ Settings</div>
   </div>
 
@@ -516,6 +562,68 @@ select.fi option{background:var(--bg2);}
     </div>
   </div><!-- /panel-grid inside dashboard tab -->
   </div><!-- /tabview-dashboard -->
+
+  <!-- ═══ PROTECTION TAB ═══════════════════════════════════════════════ -->
+  <div class="tab-view" id="tabview-protection">
+    <div class="protection-page">
+
+      <!-- Header row -->
+      <div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:10px;">
+        <div>
+          <div style="font-size:15px;font-weight:600;display:flex;align-items:center;gap:8px;">🛡 Trade Protection <span class="tag tag-blue" style="font-size:10px;">Per-Slave Config</span></div>
+          <div style="font-family:var(--mono);font-size:10px;color:var(--text3);margin-top:4px;">Configure slippage guard, lot scaling, and SL/TP sync for each slave independently.</div>
+        </div>
+        <div style="display:flex;gap:6px;">
+          <button class="btn btn-ghost btn-sm" onclick="refreshProtection()">↻ Refresh</button>
+        </div>
+      </div>
+
+      <!-- Quick-apply presets bar -->
+      <div class="settings-card">
+        <div class="settings-card-head" style="padding:12px 16px;">
+          <div class="settings-card-title" style="font-size:13px;">⚡ Quick Presets — Apply to All Slaves</div>
+        </div>
+        <div style="padding:14px 16px;">
+          <div style="font-family:var(--mono);font-size:10px;color:var(--text2);margin-bottom:10px;line-height:1.6;">
+            One-click risk profiles. Selecting a preset overwrites every protection field for the chosen slave(s).
+          </div>
+          <div style="display:grid;grid-template-columns:repeat(5,1fr);gap:8px;" id="global-presets">
+            <div class="prot-feature" style="cursor:pointer;text-align:center;" onclick="applyPresetAll('ultra_safe')">
+              <div style="font-size:20px;margin-bottom:4px;">🟢</div>
+              <div style="font-family:var(--mono);font-size:10px;font-weight:600;color:var(--green);">Ultra Safe</div>
+              <div style="font-family:var(--mono);font-size:9px;color:var(--text3);margin-top:3px;">0.25× lot · 1pt slip · Tight SL</div>
+            </div>
+            <div class="prot-feature" style="cursor:pointer;text-align:center;" onclick="applyPresetAll('conservative')">
+              <div style="font-size:20px;margin-bottom:4px;">🔵</div>
+              <div style="font-family:var(--mono);font-size:10px;font-weight:600;color:var(--blue-bright);">Conservative</div>
+              <div style="font-family:var(--mono);font-size:9px;color:var(--text3);margin-top:3px;">0.5× lot · 2pt slip · Full sync</div>
+            </div>
+            <div class="prot-feature" style="cursor:pointer;text-align:center;" onclick="applyPresetAll('default')">
+              <div style="font-size:20px;margin-bottom:4px;">⬜</div>
+              <div style="font-family:var(--mono);font-size:10px;font-weight:600;color:var(--text2);">Default</div>
+              <div style="font-family:var(--mono);font-size:9px;color:var(--text3);margin-top:3px;">1.0× lot · 3pt slip · Full sync</div>
+            </div>
+            <div class="prot-feature" style="cursor:pointer;text-align:center;" onclick="applyPresetAll('aggressive')">
+              <div style="font-size:20px;margin-bottom:4px;">🟠</div>
+              <div style="font-family:var(--mono);font-size:10px;font-weight:600;color:var(--amber);">Aggressive</div>
+              <div style="font-family:var(--mono);font-size:9px;color:var(--text3);margin-top:3px;">2.0× lot · 5pt slip · Wide TP</div>
+            </div>
+            <div class="prot-feature" style="cursor:pointer;text-align:center;" onclick="applyPresetAll('no_protection')">
+              <div style="font-size:20px;margin-bottom:4px;">🔴</div>
+              <div style="font-family:var(--mono);font-size:10px;font-weight:600;color:var(--red);">No Protection</div>
+              <div style="font-family:var(--mono);font-size:9px;color:var(--text3);margin-top:3px;">1.0× lot · No slip · No sync</div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Per-slave protection cards -->
+      <div id="prot-slave-grid" class="prot-slave-grid">
+        <div class="empty-state"><div class="empty-icon">🛡</div><div class="empty-title">No Slave Accounts</div><div class="empty-sub">Add slaves from the Dashboard tab first</div></div>
+      </div>
+
+    </div>
+  </div><!-- /tabview-protection -->
 
   <!-- ═══ SETTINGS TAB ════════════════════════════════════════════════ -->
   <div class="tab-view" id="tabview-settings">
@@ -626,7 +734,7 @@ select.fi option{background:var(--bg2);}
           </div>
           <div class="settings-row">
             <div><div class="settings-row-label">Bridge Version</div></div>
-            <span class="tag tag-blue">v2.1.0</span>
+            <span class="tag tag-blue">v2.2.0</span>
           </div>
           <div class="settings-row">
             <div><div class="settings-row-label">Bridge URL</div></div>
@@ -1337,11 +1445,12 @@ function relTime(iso){ const s=Math.floor((Date.now()-new Date(iso))/1000); if(s
 // MAIN TAB SWITCHING
 // ══════════════════════════════════════════════════════════════════════
 function switchMainTab(tab) {
-  ['dashboard','settings'].forEach(t => {
+  ['dashboard','protection','settings'].forEach(t => {
     document.getElementById('maintab-'+t).classList.toggle('active', t===tab);
     document.getElementById('tabview-'+t).classList.toggle('active', t===tab);
   });
-  if (tab==='settings') refreshSettingsPage();
+  if (tab==='settings')   refreshSettingsPage();
+  if (tab==='protection') refreshProtection();
 }
 
 // ══════════════════════════════════════════════════════════════════════
@@ -1536,29 +1645,279 @@ function showPreview(type) {
 }
 
 // ══════════════════════════════════════════════════════════════════════
-// PATCH applyStatus TO TRACK UPTIME
+// PROTECTION PAGE
+// ══════════════════════════════════════════════════════════════════════
+const protState = {};
+
+function refreshProtection() { renderProtectionCards(); }
+
+function renderProtectionCards() {
+  const grid = document.getElementById('prot-slave-grid');
+  if (!slavesData.length) {
+    grid.innerHTML = '<div class="empty-state"><div class="empty-icon">🛡</div><div class="empty-title">No Slave Accounts</div><div class="empty-sub">Add slaves from the Dashboard tab first</div></div>';
+    return;
+  }
+  grid.innerHTML = slavesData.map(s => buildProtCard(s)).join('');
+}
+
+function buildProtCard(slave) {
+  const sid = slave.account_id;
+  const p   = Object.assign({}, slave.protection || {});
+  const slipEnabled = p.slippage_enabled  !== false;
+  const slipMax     = p.slippage_max      ?? 3.0;
+  const slipMode    = p.slippage_mode     ?? 'points';
+  const slipAction  = p.slippage_action   ?? 'cancel';
+  const riskMult    = p.risk_multiplier   ?? 1.0;
+  const riskMax     = p.risk_max_lot      ?? 10.0;
+  const riskMin     = p.risk_min_lot      ?? 0.01;
+  const riskLabel   = p.risk_profile_label ?? 'default';
+  const sltpEnabled = p.sltp_sync_enabled !== false;
+  const sltpMode    = p.sltp_sync_mode    ?? 'full';
+  const sltpSL      = p.sltp_scale_sl     ?? 1.0;
+  const sltpTP      = p.sltp_scale_tp     ?? 1.0;
+  const offSL       = p.sltp_offset_sl    ?? 0;
+  const offTP       = p.sltp_offset_tp    ?? 0;
+  const conn = slave.connection_status === 'connected';
+
+  const slipChip = slipEnabled
+    ? `<span class="prot-chip prot-chip-slip">🛡 ${slipMax}${slipMode[0]} slip</span>`
+    : `<span class="prot-chip prot-chip-off">slip off</span>`;
+  const lotChip  = `<span class="prot-chip prot-chip-lot">×${riskMult} lot</span>`;
+  const sltpChip = sltpEnabled
+    ? `<span class="prot-chip prot-chip-sltp">SL/TP ${sltpMode.replace('_',' ')}</span>`
+    : `<span class="prot-chip prot-chip-off">no sync</span>`;
+
+  const syncOpts = [['full','Both SL+TP'],['sl_only','SL Only'],['tp_only','TP Only'],['none','Disabled']];
+  const slipModes = ['points','pips','percent'];
+
+  return `<div class="prot-card" id="pc-${sid}">
+    <div class="prot-card-head">
+      <div class="prot-card-title">
+        <span class="dot ${conn?'dot-blue':'dot-gray'}"></span>${esc(slave.label)}
+      </div>
+      <span class="tag tag-gray" style="font-size:9px;">${esc(slave.server||'')}</span>
+    </div>
+    <div class="prot-card-body">
+      <div class="prot-summary">${slipChip}${lotChip}${sltpChip}</div>
+      <div style="font-family:var(--mono);font-size:9px;color:var(--text3);text-transform:uppercase;letter-spacing:.5px;margin-bottom:6px;">Quick Preset</div>
+      <div class="preset-grid">
+        <button class="preset-btn ultra_safe"   onclick="applyPreset('${sid}','ultra_safe')">🟢 Ultra Safe</button>
+        <button class="preset-btn conservative" onclick="applyPreset('${sid}','conservative')">🔵 Conservative</button>
+        <button class="preset-btn default"      onclick="applyPreset('${sid}','default')">⬜ Default</button>
+        <button class="preset-btn aggressive"   onclick="applyPreset('${sid}','aggressive')">🟠 Aggressive</button>
+        <button class="preset-btn no_protection" onclick="applyPreset('${sid}','no_protection')">🔴 Off</button>
+      </div>
+
+      <div class="prot-feature">
+        <div class="prot-feature-head">
+          <div class="prot-feature-title">🛡 Slippage Protection</div>
+          <label class="toggle"><input type="checkbox" id="slip-en-${sid}" ${slipEnabled?'checked':''}
+            onchange="updateProtField('${sid}','slippage_enabled',this.checked);refreshSummary('${sid}')"/>
+            <div class="toggle-track"><div class="toggle-thumb"></div></div></label>
+        </div>
+        <div class="slider-row">
+          <span class="slider-lbl">Max deviation</span>
+          <input type="range" class="slider-input" id="slip-max-${sid}" min="0.5" max="50" step="0.5" value="${slipMax}"
+            oninput="document.getElementById('sv-slip-${sid}').textContent=parseFloat(this.value);updateProtField('${sid}','slippage_max',parseFloat(this.value));refreshSummary('${sid}')"/>
+          <span class="slider-val" id="sv-slip-${sid}">${slipMax}</span>
+        </div>
+        <div style="font-family:var(--mono);font-size:9px;color:var(--text3);margin-bottom:5px;">Unit:</div>
+        <div class="mode-pills">${slipModes.map(m=>`<span class="mode-pill ${slipMode===m?'active':''}" onclick="setSlipMode('${sid}','${m}')">${m}</span>`).join('')}</div>
+        <div style="font-family:var(--mono);font-size:9px;color:var(--text3);margin-bottom:4px;">If exceeded:</div>
+        <div class="action-row">
+          <div class="action-opt ${slipAction==='cancel'?'active-cancel':''}" id="act-cancel-${sid}"
+            onclick="setSlipAction('${sid}','cancel')">✕ Cancel trade</div>
+          <div class="action-opt ${slipAction==='execute_anyway'?'active-anyway':''}" id="act-anyway-${sid}"
+            onclick="setSlipAction('${sid}','execute_anyway')">⚠ Warn, execute anyway</div>
+        </div>
+      </div>
+
+      <div class="prot-feature">
+        <div class="prot-feature-head">
+          <div class="prot-feature-title">⚖ Lot Scaling</div>
+          <span class="tag tag-blue" style="font-size:9px;" id="lot-label-${sid}">${esc(riskLabel)}</span>
+        </div>
+        <div class="slider-row">
+          <span class="slider-lbl">Risk multiplier</span>
+          <input type="range" class="slider-input" id="risk-mult-${sid}" min="0.1" max="5" step="0.1" value="${riskMult}"
+            oninput="document.getElementById('sv-mult-${sid}').textContent=parseFloat(this.value)+'×';updateProtField('${sid}','risk_multiplier',parseFloat(this.value));refreshSummary('${sid}');updateLotLabel('${sid}',parseFloat(this.value))"/>
+          <span class="slider-val" id="sv-mult-${sid}">${riskMult}×</span>
+        </div>
+        <div style="font-family:var(--mono);font-size:9px;color:var(--text3);margin:3px 0 6px;">Final lot = base × <span style="color:var(--blue-bright)">${riskMult}</span> → clamped [${riskMin}, ${riskMax}]</div>
+        <div class="frow">
+          <div><div style="font-family:var(--mono);font-size:9px;color:var(--text3);margin-bottom:3px;">Min lot</div>
+            <input class="fi" style="font-size:11px;padding:5px 8px;" id="rmin-${sid}" type="number" step="0.01" value="${riskMin}" min="0.01"
+              onchange="updateProtField('${sid}','risk_min_lot',parseFloat(this.value)||0.01)"/></div>
+          <div><div style="font-family:var(--mono);font-size:9px;color:var(--text3);margin-bottom:3px;">Max lot</div>
+            <input class="fi" style="font-size:11px;padding:5px 8px;" id="rmax-${sid}" type="number" step="0.5" value="${riskMax}" min="0.01"
+              onchange="updateProtField('${sid}','risk_max_lot',parseFloat(this.value)||10)"/></div>
+        </div>
+      </div>
+
+      <div class="prot-feature">
+        <div class="prot-feature-head">
+          <div class="prot-feature-title">🔄 SL/TP Synchronisation</div>
+          <label class="toggle"><input type="checkbox" id="sltp-en-${sid}" ${sltpEnabled?'checked':''}
+            onchange="updateProtField('${sid}','sltp_sync_enabled',this.checked);refreshSummary('${sid}')"/>
+            <div class="toggle-track"><div class="toggle-thumb"></div></div></label>
+        </div>
+        <div style="font-family:var(--mono);font-size:9px;color:var(--text3);margin-bottom:5px;">Sync mode:</div>
+        <div class="sync-mode-grid" id="sync-mode-${sid}">
+          ${syncOpts.map(([v,l])=>`<div class="sync-mode-opt ${sltpMode===v?'active':''}" onclick="setSyncMode('${sid}','${v}')">${l}</div>`).join('')}
+        </div>
+        <div style="font-family:var(--mono);font-size:9px;color:var(--text3);margin:8px 0 5px;">Scale SL/TP distance from entry:</div>
+        <div class="slider-row">
+          <span class="slider-lbl">SL scale</span>
+          <input type="range" class="slider-input" id="sl-scale-${sid}" min="0.1" max="3" step="0.1" value="${sltpSL}"
+            oninput="document.getElementById('sv-sls-${sid}').textContent=parseFloat(this.value)+'×';updateProtField('${sid}','sltp_scale_sl',parseFloat(this.value))"/>
+          <span class="slider-val" id="sv-sls-${sid}">${sltpSL}×</span>
+        </div>
+        <div class="slider-row">
+          <span class="slider-lbl">TP scale</span>
+          <input type="range" class="slider-input" id="tp-scale-${sid}" min="0.1" max="3" step="0.1" value="${sltpTP}"
+            oninput="document.getElementById('sv-tps-${sid}').textContent=parseFloat(this.value)+'×';updateProtField('${sid}','sltp_scale_tp',parseFloat(this.value))"/>
+          <span class="slider-val" id="sv-tps-${sid}">${sltpTP}×</span>
+        </div>
+        <div style="font-family:var(--mono);font-size:9px;color:var(--text3);margin:4px 0 5px;">Fixed offset in points (+ wider, − tighter):</div>
+        <div class="frow">
+          <div><div style="font-family:var(--mono);font-size:9px;color:var(--text3);margin-bottom:3px;">SL offset</div>
+            <input class="fi" style="font-size:11px;padding:5px 8px;" id="sl-off-${sid}" type="number" step="1" value="${offSL}"
+              onchange="updateProtField('${sid}','sltp_offset_sl',parseFloat(this.value)||0)"/></div>
+          <div><div style="font-family:var(--mono);font-size:9px;color:var(--text3);margin-bottom:3px;">TP offset</div>
+            <input class="fi" style="font-size:11px;padding:5px 8px;" id="tp-off-${sid}" type="number" step="1" value="${offTP}"
+              onchange="updateProtField('${sid}','sltp_offset_tp',parseFloat(this.value)||0)"/></div>
+        </div>
+      </div>
+
+      <button class="btn btn-primary prot-save-btn" onclick="saveProtection('${sid}')">💾 Save Protection Config</button>
+    </div>
+  </div>`;
+}
+
+function updateProtField(sid, field, value) {
+  if (!protState[sid]) {
+    const s = slavesData.find(x => x.account_id === sid);
+    protState[sid] = Object.assign({}, s?.protection || {});
+  }
+  protState[sid][field] = value;
+}
+
+function getProtState(sid) {
+  const s = slavesData.find(x => x.account_id === sid);
+  return Object.assign({}, s?.protection || {}, protState[sid] || {});
+}
+
+function setSlipMode(sid, mode) {
+  updateProtField(sid, 'slippage_mode', mode);
+  refreshSummary(sid);
+  const card = document.getElementById('pc-'+sid);
+  if (card) card.querySelectorAll('.mode-pill').forEach(el => el.classList.toggle('active', el.textContent.trim() === mode));
+}
+
+function setSlipAction(sid, action) {
+  updateProtField(sid, 'slippage_action', action);
+  const c = document.getElementById('act-cancel-'+sid);
+  const a = document.getElementById('act-anyway-'+sid);
+  if (c) c.className = 'action-opt'+(action==='cancel'?' active-cancel':'');
+  if (a) a.className = 'action-opt'+(action==='execute_anyway'?' active-anyway':'');
+}
+
+function setSyncMode(sid, mode) {
+  updateProtField(sid, 'sltp_sync_mode', mode);
+  refreshSummary(sid);
+  const grid = document.getElementById('sync-mode-'+sid);
+  if (!grid) return;
+  const vals = {full:'Both SL+TP', sl_only:'SL Only', tp_only:'TP Only', none:'Disabled'};
+  grid.querySelectorAll('.sync-mode-opt').forEach(el => {
+    const v = Object.keys(vals).find(k => vals[k] === el.textContent) || 'none';
+    el.classList.toggle('active', v === mode);
+  });
+}
+
+function updateLotLabel(sid, mult) {
+  const el = document.getElementById('lot-label-'+sid);
+  if (!el) return;
+  el.textContent = mult<=0.3?'ultra_safe':mult<=0.7?'conservative':mult<=1.2?'default':mult<=2.5?'aggressive':'extreme';
+}
+
+function refreshSummary(sid) {
+  const p    = getProtState(sid);
+  const card = document.getElementById('pc-'+sid);
+  if (!card) return;
+  const sum = card.querySelector('.prot-summary');
+  if (!sum) return;
+  const se = p.slippage_enabled!==false, te = p.sltp_sync_enabled!==false;
+  const sm = p.slippage_max??3, smo = p.slippage_mode??'points';
+  const rm = p.risk_multiplier??1, tm = p.sltp_sync_mode??'full';
+  sum.innerHTML =
+    (se?`<span class="prot-chip prot-chip-slip">🛡 ${sm}${smo[0]} slip</span>`:`<span class="prot-chip prot-chip-off">slip off</span>`)+
+    `<span class="prot-chip prot-chip-lot">×${rm} lot</span>`+
+    (te?`<span class="prot-chip prot-chip-sltp">SL/TP ${tm.replace('_',' ')}</span>`:`<span class="prot-chip prot-chip-off">no sync</span>`);
+}
+
+async function saveProtection(sid) {
+  const p = getProtState(sid);
+  try {
+    await apiFetch(`/slaves/${sid}/protection`,'PUT', p);
+    const s = slavesData.find(x=>x.account_id===sid);
+    if (s) s.protection = p;
+    delete protState[sid];
+    toast('Protection saved ✓','success');
+    refreshSummary(sid);
+  } catch(e) { toast('Save failed: '+e.message,'error'); }
+}
+
+async function applyPreset(sid, name) {
+  try {
+    const r = await apiFetch(`/slaves/${sid}/protection/preset?preset_name=${name}`,'POST');
+    const s = slavesData.find(x=>x.account_id===sid);
+    if (s) s.protection = r.protection;
+    delete protState[sid];
+    const card = document.getElementById('pc-'+sid);
+    if (card && s) card.outerHTML = buildProtCard(s);
+    toast(`Preset "${name}" applied ✓`,'success');
+  } catch(e) { toast('Preset failed: '+e.message,'error'); }
+}
+
+async function applyPresetAll(name) {
+  if (!slavesData.length) return toast('No slaves registered','error');
+  showConfirm(`Apply "${name.replace('_',' ')}" to ALL ${slavesData.length} slave(s)?`, async ()=>{
+    let ok=0, fail=0;
+    for (const s of slavesData) {
+      try { const r=await apiFetch(`/slaves/${s.account_id}/protection/preset?preset_name=${name}`,'POST'); s.protection=r.protection; delete protState[s.account_id]; ok++; }
+      catch(e){ fail++; }
+    }
+    toast(`Preset applied: ${ok} ok${fail?' · '+fail+' failed':''}`, ok>0?'success':'error');
+    renderProtectionCards();
+  });
+}
+
+// ══════════════════════════════════════════════════════════════════════
+// PATCH applyStatus — uptime + blocked counter + protection refresh
 // ══════════════════════════════════════════════════════════════════════
 const _origApply = applyStatus;
 applyStatus = function(s) {
   _origApply(s);
   window._lastUptime = s.uptime_seconds || 0;
-  // Update telegram toggle if status includes it
+  const bEl = document.getElementById('s-blocked');
+  if (bEl) bEl.textContent = s.trades_blocked_today ?? 0;
   if (s.telegram_enabled !== undefined) {
     const tog = document.getElementById('tg-master-toggle');
     if (tog) tog.checked = s.telegram_enabled;
   }
+  // Re-render protection cards if tab is open (live protection data in slave statuses)
+  const protTab = document.getElementById('tabview-protection');
+  if (protTab && protTab.classList.contains('active')) renderProtectionCards();
 };
 
 // ══════════════════════════════════════════════════════════════════════
 // BOOT
 // ══════════════════════════════════════════════════════════════════════
 document.getElementById('cfg-url').addEventListener('change',e=>{ BRIDGE=e.target.value.replace(/\/$/,''); });
-// Polling fallback
 setInterval(()=>{
   if(!wsActive) refreshAll();
   else apiFetch('/logs?limit=400').then(logs=>{localLogs=logs;renderLog();}).catch(()=>{});
 },3000);
-// Initial render
 renderMasters(); renderSlaves(); renderLog();
 loadEventPrefs();
 showPreview('copied');
