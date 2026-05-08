@@ -1,0 +1,1568 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8"/>
+<meta name="viewport" content="width=device-width,initial-scale=1.0"/>
+<title>OmniRoute — Multi-Master Trade Copier</title>
+<link rel="preconnect" href="https://fonts.googleapis.com"/>
+<link href="https://fonts.googleapis.com/css2?family=Geist+Mono:wght@300;400;500;600;700&family=Instrument+Sans:wght@400;500;600;700&display=swap" rel="stylesheet"/>
+<style>
+:root {
+  --bg:#05070a; --bg1:#080c12; --bg2:#0c1018; --bg3:#111722;
+  --border:#1a2236; --border2:#243048;
+  --blue:#0070f3; --blue-dim:#0050b8; --blue-bright:#3b9eff;
+  --blue-glow:rgba(0,112,243,.22); --blue-glow2:rgba(0,112,243,.08);
+  --green:#00d68f; --red:#ff3b5c; --amber:#ffad0d;
+  --text:#cdd9ee; --text2:#8899b8; --text3:#4a5878;
+  --mono:'Geist Mono',monospace; --sans:'Instrument Sans',sans-serif;
+  --r:8px; --r2:12px;
+}
+*,*::before,*::after{box-sizing:border-box;margin:0;padding:0;}
+html,body{height:100%;}
+body{min-height:100%;background:var(--bg);color:var(--text);font-family:var(--sans);font-size:14px;line-height:1.5;overflow-x:hidden;}
+::-webkit-scrollbar{width:4px;height:4px;}
+::-webkit-scrollbar-track{background:transparent;}
+::-webkit-scrollbar-thumb{background:var(--border2);border-radius:2px;}
+
+/* ── ANIMATED BACKGROUND CANVAS ─────────────────────────────────────── */
+#bg-canvas{position:fixed;inset:0;z-index:0;pointer-events:none;}
+
+/* ── QUOTE TICKER ───────────────────────────────────────────────────── */
+#quote-strip{
+  position:fixed;bottom:0;left:0;right:0;z-index:2;
+  height:32px;display:flex;align-items:center;overflow:hidden;
+  background:linear-gradient(90deg,var(--bg) 0%,rgba(5,7,10,0) 4%,rgba(5,7,10,0) 96%,var(--bg) 100%);
+  border-top:1px solid var(--border);pointer-events:none;
+}
+#quote-inner{
+  display:flex;gap:80px;white-space:nowrap;
+  animation:ticker 60s linear infinite;
+}
+@keyframes ticker{from{transform:translateX(0)}to{transform:translateX(-50%)}}
+.q-item{font-family:var(--mono);font-size:11px;color:var(--text3);display:flex;align-items:center;gap:12px;}
+.q-item::before{content:'◆';color:var(--blue);font-size:8px;opacity:.6;}
+
+/* ── LAYOUT ──────────────────────────────────────────────────────────── */
+#app{position:relative;z-index:1;display:flex;flex-direction:column;min-height:100vh;padding-bottom:32px;}
+
+/* ── HEADER ──────────────────────────────────────────────────────────── */
+header{
+  position:sticky;top:0;z-index:100;
+  background:rgba(5,7,10,.9);backdrop-filter:blur(20px);
+  border-bottom:1px solid var(--border);padding:0 24px;height:56px;
+  display:flex;align-items:center;justify-content:space-between;
+}
+.logo-mark{width:28px;height:28px;border-radius:6px;background:var(--blue);box-shadow:0 0 20px var(--blue-glow);display:flex;align-items:center;justify-content:center;font-family:var(--mono);font-size:12px;font-weight:700;color:#fff;}
+.logo-text{font-family:var(--mono);font-size:15px;font-weight:600;letter-spacing:-.3px;}
+.logo-text span{color:var(--blue);}
+.logo-version{font-family:var(--mono);font-size:10px;color:var(--text3);background:var(--bg3);border:1px solid var(--border);padding:2px 6px;border-radius:4px;}
+.header-right{display:flex;align-items:center;gap:18px;}
+.hstat{display:flex;align-items:center;gap:6px;}
+.hstat-label{font-family:var(--mono);font-size:10px;color:var(--text3);text-transform:uppercase;letter-spacing:.5px;}
+.hstat-val{font-family:var(--mono);font-size:13px;font-weight:600;}
+.hdivider{width:1px;height:20px;background:var(--border);}
+#ws-pill{display:flex;align-items:center;gap:6px;padding:4px 10px;border-radius:99px;font-family:var(--mono);font-size:11px;border:1px solid var(--border);background:var(--bg2);}
+
+/* ── MAIN GRID ───────────────────────────────────────────────────────── */
+main{flex:1;display:grid;grid-template-columns:300px 1fr;gap:0;max-width:1600px;margin:0 auto;width:100%;}
+
+/* ── SIDEBAR ─────────────────────────────────────────────────────────── */
+.sidebar{border-right:1px solid var(--border);display:flex;flex-direction:column;background:rgba(8,12,18,.85);backdrop-filter:blur(8px);overflow-y:auto;}
+.sb-section{border-bottom:1px solid var(--border);}
+.sb-head{padding:12px 16px;display:flex;align-items:center;justify-content:space-between;cursor:pointer;user-select:none;transition:background .15s;}
+.sb-head:hover{background:var(--bg2);}
+.sb-title{font-family:var(--mono);font-size:10px;font-weight:600;text-transform:uppercase;letter-spacing:1px;color:var(--text2);}
+.sb-body{padding:14px 16px;}
+
+/* Setup Guide Box */
+.setup-guide{background:rgba(0,112,243,.06);border:1px solid rgba(0,112,243,.2);border-radius:8px;padding:12px;margin-bottom:12px;font-size:12px;}
+.setup-guide-title{font-family:var(--mono);font-size:10px;color:var(--blue-bright);font-weight:600;margin-bottom:8px;display:flex;align-items:center;gap:6px;}
+.setup-step{display:flex;gap:8px;margin-bottom:6px;color:var(--text2);}
+.setup-num{font-family:var(--mono);font-size:10px;color:var(--blue);background:rgba(0,112,243,.15);width:18px;height:18px;border-radius:3px;display:flex;align-items:center;justify-content:center;flex-shrink:0;font-weight:600;}
+.setup-text{font-family:var(--mono);font-size:10px;line-height:1.5;}
+.setup-code{background:var(--bg3);border:1px solid var(--border);border-radius:4px;padding:2px 6px;color:var(--blue-bright);font-size:10px;}
+
+/* Tooltip */
+.tip{position:relative;display:inline-flex;align-items:center;}
+.tip-icon{width:14px;height:14px;border-radius:50%;background:var(--bg3);border:1px solid var(--border2);color:var(--text3);font-size:9px;display:flex;align-items:center;justify-content:center;cursor:help;flex-shrink:0;}
+.tip-box{position:absolute;left:20px;top:-4px;z-index:200;background:var(--bg3);border:1px solid var(--border2);border-radius:6px;padding:8px 10px;width:200px;font-family:var(--mono);font-size:10px;color:var(--text2);line-height:1.5;box-shadow:0 8px 24px rgba(0,0,0,.5);display:none;pointer-events:none;}
+.tip:hover .tip-box{display:block;}
+
+/* ── FORM ────────────────────────────────────────────────────────────── */
+.fg{margin-bottom:9px;}
+.fl{font-family:var(--mono);font-size:10px;color:var(--text3);text-transform:uppercase;letter-spacing:.5px;display:flex;align-items:center;gap:6px;margin-bottom:3px;}
+.fi{width:100%;background:var(--bg);border:1px solid var(--border);border-radius:6px;color:var(--text);font-family:var(--mono);font-size:12px;padding:7px 10px;outline:none;transition:border-color .15s,box-shadow .15s;}
+.fi:focus{border-color:var(--blue);box-shadow:0 0 0 2px rgba(0,112,243,.15);}
+.fi::placeholder{color:var(--text3);}
+select.fi{appearance:none;background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='6' viewBox='0 0 10 6'%3E%3Cpath d='M0 0l5 6 5-6z' fill='%234a5878'/%3E%3C/svg%3E");background-repeat:no-repeat;background-position:right 10px center;padding-right:28px;}
+select.fi option{background:var(--bg2);}
+.frow{display:grid;grid-template-columns:1fr 1fr;gap:8px;}
+
+.role-toggle{display:grid;grid-template-columns:1fr 1fr;background:var(--bg);border:1px solid var(--border);border-radius:6px;padding:3px;gap:3px;margin-bottom:12px;}
+.role-btn{padding:6px;border-radius:4px;border:none;background:transparent;color:var(--text2);font-family:var(--mono);font-size:11px;font-weight:500;cursor:pointer;transition:all .15s;text-align:center;}
+.role-btn.active{background:var(--blue);color:#fff;box-shadow:0 0 12px rgba(0,112,243,.4);}
+
+/* ── BUTTONS ─────────────────────────────────────────────────────────── */
+.btn{display:inline-flex;align-items:center;justify-content:center;gap:6px;padding:7px 14px;border-radius:6px;font-size:12px;font-weight:600;cursor:pointer;border:none;transition:all .15s;white-space:nowrap;font-family:var(--sans);}
+.btn-primary{background:var(--blue);color:#fff;box-shadow:0 0 16px rgba(0,112,243,.3);}
+.btn-primary:hover{background:var(--blue-bright);box-shadow:0 0 24px rgba(0,112,243,.5);transform:translateY(-1px);}
+.btn-ghost{background:transparent;color:var(--text2);border:1px solid var(--border);}
+.btn-ghost:hover{border-color:var(--blue);color:var(--blue);}
+.btn-danger{background:rgba(255,59,92,.1);color:var(--red);border:1px solid rgba(255,59,92,.2);}
+.btn-danger:hover{background:rgba(255,59,92,.2);}
+.btn-warn{background:rgba(255,173,13,.08);color:var(--amber);border:1px solid rgba(255,173,13,.2);}
+.btn-xs{padding:3px 8px;font-size:10px;border-radius:4px;}
+.btn-sm{padding:5px 10px;font-size:11px;}
+.btn-full{width:100%;}
+
+/* ── CONTENT ─────────────────────────────────────────────────────────── */
+.content{display:flex;flex-direction:column;overflow:hidden;background:rgba(5,7,10,.7);}
+
+/* stat bar */
+.stat-bar{display:grid;grid-template-columns:repeat(5,1fr);border-bottom:1px solid var(--border);background:rgba(8,12,18,.85);backdrop-filter:blur(8px);}
+.stat-cell{padding:14px 18px;border-right:1px solid var(--border);display:flex;flex-direction:column;gap:4px;}
+.stat-cell:last-child{border-right:none;}
+.stat-label{font-family:var(--mono);font-size:9px;color:var(--text3);text-transform:uppercase;letter-spacing:.8px;}
+.stat-value{font-family:var(--mono);font-size:22px;font-weight:700;letter-spacing:-1px;line-height:1;}
+
+/* section head */
+.sec-head{display:flex;align-items:center;justify-content:space-between;padding:12px 20px;border-bottom:1px solid var(--border);background:rgba(8,12,18,.8);flex-shrink:0;}
+.sec-title{font-family:var(--mono);font-size:10px;font-weight:600;text-transform:uppercase;letter-spacing:1px;color:var(--text2);display:flex;align-items:center;gap:8px;}
+.sec-title::before{content:'';width:3px;height:12px;background:var(--blue);border-radius:2px;box-shadow:0 0 8px var(--blue);display:inline-block;}
+
+/* panel grid */
+.panel-grid{flex:1;display:grid;grid-template-columns:1fr 360px;grid-template-rows:1fr auto;overflow:hidden;}
+
+/* ── MASTER CARDS ────────────────────────────────────────────────────── */
+.masters-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(330px,1fr));gap:14px;padding:16px;overflow-y:auto;align-content:start;}
+.master-card{background:rgba(12,16,24,.9);border:1px solid var(--border);border-radius:var(--r2);overflow:hidden;transition:border-color .25s,box-shadow .25s;position:relative;}
+.master-card::before{content:'';position:absolute;top:0;left:0;right:0;height:2px;background:linear-gradient(90deg,transparent,var(--blue),transparent);opacity:0;transition:opacity .3s;}
+.master-card.connected{border-color:rgba(0,112,243,.35);box-shadow:0 0 0 1px rgba(0,112,243,.1),0 4px 24px rgba(0,0,0,.4);}
+.master-card.connected::before{opacity:1;}
+.master-card.error{border-color:rgba(255,59,92,.35);}
+.mc-head{padding:14px;display:flex;align-items:flex-start;justify-content:space-between;border-bottom:1px solid var(--border);}
+.mc-label{font-weight:600;font-size:14px;}
+.mc-meta{font-family:var(--mono);font-size:10px;color:var(--text3);margin-top:2px;}
+.mc-magic{font-family:var(--mono);font-size:10px;background:var(--bg3);border:1px solid var(--border2);padding:2px 8px;border-radius:4px;color:var(--blue-bright);}
+.mc-stats{display:grid;grid-template-columns:repeat(3,1fr);border-bottom:1px solid var(--border);}
+.mst{padding:9px 12px;border-right:1px solid var(--border);}
+.mst:last-child{border-right:none;}
+.mst-l{font-family:var(--mono);font-size:9px;color:var(--text3);text-transform:uppercase;letter-spacing:.4px;}
+.mst-v{font-family:var(--mono);font-size:14px;font-weight:600;margin-top:2px;}
+.subs-head{padding:8px 12px;display:flex;align-items:center;justify-content:space-between;background:rgba(8,12,18,.6);border-bottom:1px solid var(--border);}
+.subs-label{font-family:var(--mono);font-size:9px;color:var(--text3);text-transform:uppercase;letter-spacing:.5px;}
+.subs-list{padding:8px;display:flex;flex-direction:column;gap:5px;min-height:36px;}
+.sub-chip{display:flex;align-items:center;justify-content:space-between;background:var(--bg3);border:1px solid var(--border);border-radius:6px;padding:5px 9px;transition:border-color .15s;}
+.sub-chip:hover{border-color:var(--border2);}
+.sub-chip-label{font-size:12px;font-weight:500;}
+.sub-chip-server{font-family:var(--mono);font-size:9px;color:var(--text3);}
+.sub-chip-eq{font-family:var(--mono);font-size:10px;color:var(--text2);}
+.chip-unlink{background:transparent;border:none;cursor:pointer;color:var(--text3);font-size:13px;padding:2px 4px;border-radius:3px;transition:color .15s,background .15s;line-height:1;}
+.chip-unlink:hover{color:var(--red);background:rgba(255,59,92,.1);}
+.add-sub-btn{width:100%;padding:6px;background:transparent;border:1px dashed var(--border2);border-radius:5px;color:var(--text3);font-size:11px;cursor:pointer;transition:all .15s;font-family:var(--mono);}
+.add-sub-btn:hover{border-color:var(--blue);color:var(--blue);background:var(--blue-glow2);}
+.no-subs{text-align:center;padding:10px 8px;font-family:var(--mono);font-size:10px;color:var(--text3);}
+
+/* ── SLAVES PANEL ────────────────────────────────────────────────────── */
+.slaves-panel{border-left:1px solid var(--border);display:flex;flex-direction:column;background:rgba(8,12,18,.85);overflow:hidden;}
+.slave-list{overflow-y:auto;flex:1;padding:10px;display:flex;flex-direction:column;gap:5px;}
+.slave-row{background:rgba(12,16,24,.8);border:1px solid var(--border);border-radius:8px;padding:9px 11px;display:flex;align-items:center;gap:9px;transition:border-color .15s;}
+.slave-row:hover{border-color:var(--border2);}
+.slave-row-info{flex:1;min-width:0;}
+.slave-row-label{font-size:12px;font-weight:500;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
+.slave-row-meta{font-family:var(--mono);font-size:9px;color:var(--text3);margin-top:1px;}
+.slave-row-eq{font-family:var(--mono);font-size:10px;color:var(--text2);}
+.mbadges{display:flex;gap:3px;flex-wrap:wrap;margin-top:3px;}
+.mbadge{font-family:var(--mono);font-size:9px;padding:1px 5px;border-radius:3px;background:rgba(0,112,243,.12);color:var(--blue-bright);border:1px solid rgba(0,112,243,.2);}
+
+/* ── LOG ─────────────────────────────────────────────────────────────── */
+.log-panel{grid-column:1/3;border-top:1px solid var(--border);background:rgba(5,7,10,.9);backdrop-filter:blur(8px);display:flex;flex-direction:column;max-height:240px;}
+.log-toolbar{padding:8px 16px;border-bottom:1px solid var(--border);display:flex;align-items:center;gap:12px;flex-shrink:0;flex-wrap:wrap;}
+.log-filter-group{display:flex;align-items:center;gap:6px;}
+.log-filter-label{font-family:var(--mono);font-size:10px;color:var(--text3);text-transform:uppercase;letter-spacing:.4px;}
+.log-entries{flex:1;overflow-y:auto;font-family:var(--mono);font-size:11px;padding:6px 14px;}
+.log-row{display:flex;align-items:baseline;gap:10px;padding:3px 7px;border-radius:4px;border-left:2px solid transparent;transition:background .1s;animation:fadeSlide .2s ease forwards;}
+.log-row:hover{background:rgba(255,255,255,.02);}
+.log-row.INFO{border-color:var(--blue);}
+.log-row.ERROR{border-color:var(--red);}
+.log-row.WARN{border-color:var(--amber);}
+@keyframes fadeSlide{from{opacity:0;transform:translateX(-4px)}to{opacity:1;transform:translateX(0)}}
+.log-ts{color:var(--text3);flex-shrink:0;}
+.log-lvl{flex-shrink:0;font-weight:600;width:38px;}
+.log-lvl.INFO{color:var(--blue-bright);}
+.log-lvl.ERROR{color:var(--red);}
+.log-lvl.WARN{color:var(--amber);}
+.log-master{color:var(--blue-bright);flex-shrink:0;font-weight:500;}
+.log-slave{color:var(--text2);flex-shrink:0;}
+.log-msg{color:var(--text);flex:1;}
+.lat-chip{font-family:var(--mono);font-size:9px;padding:1px 5px;border-radius:3px;flex-shrink:0;}
+.lat-g{background:rgba(0,214,143,.1);color:var(--green);}
+.lat-o{background:rgba(255,173,13,.1);color:var(--amber);}
+.lat-r{background:rgba(255,59,92,.1);color:var(--red);}
+
+/* ── DOTS ────────────────────────────────────────────────────────────── */
+.dot{width:8px;height:8px;border-radius:50%;flex-shrink:0;display:inline-block;}
+.dot-blue{background:var(--blue);box-shadow:0 0 8px var(--blue),0 0 16px rgba(0,112,243,.4);animation:pb 2s infinite;}
+.dot-green{background:var(--green);box-shadow:0 0 8px var(--green);}
+.dot-red{background:var(--red);box-shadow:0 0 8px var(--red);animation:pr 1.5s infinite;}
+.dot-gray{background:var(--text3);}
+.dot-amber{background:var(--amber);box-shadow:0 0 6px var(--amber);}
+@keyframes pb{0%,100%{box-shadow:0 0 8px var(--blue),0 0 16px rgba(0,112,243,.4);opacity:1}50%{box-shadow:0 0 4px var(--blue);opacity:.6}}
+@keyframes pr{0%,100%{opacity:1}50%{opacity:.4}}
+
+/* ── TAGS ────────────────────────────────────────────────────────────── */
+.tag{display:inline-flex;align-items:center;gap:3px;padding:2px 7px;border-radius:4px;font-family:var(--mono);font-size:10px;}
+.tag-blue{background:rgba(0,112,243,.12);color:var(--blue-bright);border:1px solid rgba(0,112,243,.2);}
+.tag-green{background:rgba(0,214,143,.1);color:var(--green);border:1px solid rgba(0,214,143,.2);}
+.tag-red{background:rgba(255,59,92,.1);color:var(--red);border:1px solid rgba(255,59,92,.2);}
+.tag-gray{background:var(--bg3);color:var(--text3);border:1px solid var(--border);}
+
+/* ── MODAL ───────────────────────────────────────────────────────────── */
+.modal-backdrop{position:fixed;inset:0;z-index:500;background:rgba(5,7,10,.85);backdrop-filter:blur(6px);display:flex;align-items:center;justify-content:center;animation:fadeIn .15s ease;}
+.modal-backdrop.hidden{display:none;}
+@keyframes fadeIn{from{opacity:0}to{opacity:1}}
+.modal{background:var(--bg2);border:1px solid var(--border2);border-radius:var(--r2);width:480px;max-width:95vw;box-shadow:0 24px 60px rgba(0,0,0,.6),0 0 0 1px rgba(0,112,243,.1);animation:slideUp .2s cubic-bezier(.16,1,.3,1);}
+@keyframes slideUp{from{opacity:0;transform:translateY(12px)}to{opacity:1;transform:translateY(0)}}
+.modal-header{padding:16px 20px 12px;border-bottom:1px solid var(--border);display:flex;align-items:center;justify-content:space-between;}
+.modal-title{font-size:15px;font-weight:600;}
+.modal-close{background:none;border:none;color:var(--text3);font-size:18px;cursor:pointer;padding:2px 6px;border-radius:4px;}
+.modal-close:hover{color:var(--text);background:var(--bg3);}
+.modal-body{padding:18px 20px;}
+.modal-footer{padding:12px 20px;border-top:1px solid var(--border);display:flex;justify-content:flex-end;gap:8px;}
+.link-slave-item{display:flex;align-items:center;justify-content:space-between;background:var(--bg3);border:1px solid var(--border);border-radius:6px;padding:9px 12px;cursor:pointer;transition:all .15s;margin-bottom:6px;}
+.link-slave-item:hover{border-color:var(--blue);background:var(--blue-glow2);}
+.link-slave-item.linked{opacity:.45;cursor:not-allowed;}
+.link-slave-item.linked:hover{border-color:var(--border);background:var(--bg3);}
+
+/* ── TOAST ───────────────────────────────────────────────────────────── */
+#toasts{position:fixed;bottom:40px;right:20px;z-index:900;display:flex;flex-direction:column-reverse;gap:6px;}
+.toast{padding:9px 14px;border-radius:7px;font-family:var(--mono);font-size:12px;display:flex;align-items:center;gap:8px;border:1px solid transparent;min-width:240px;animation:slideUp .2s ease;box-shadow:0 8px 24px rgba(0,0,0,.5);}
+.toast.success{background:rgba(0,214,143,.1);border-color:rgba(0,214,143,.25);color:var(--green);}
+.toast.error{background:rgba(255,59,92,.1);border-color:rgba(255,59,92,.25);color:var(--red);}
+.toast.info{background:rgba(0,112,243,.1);border-color:rgba(0,112,243,.25);color:var(--blue-bright);}
+
+.empty-state{display:flex;flex-direction:column;align-items:center;justify-content:center;gap:10px;padding:40px 20px;color:var(--text3);text-align:center;}
+.empty-icon{font-size:32px;opacity:.25;}
+.empty-title{font-size:13px;font-weight:500;color:var(--text2);}
+.empty-sub{font-family:var(--mono);font-size:10px;}
+
+/* ── MAIN NAV TABS ─────────────────────────────────────────────────── */
+.main-tabs{display:flex;align-items:center;gap:2px;padding:0 20px;background:rgba(8,12,18,.9);border-bottom:1px solid var(--border);flex-shrink:0;}
+.main-tab{padding:12px 16px;font-family:var(--mono);font-size:11px;font-weight:500;color:var(--text3);cursor:pointer;border-bottom:2px solid transparent;transition:all .15s;text-transform:uppercase;letter-spacing:.5px;display:flex;align-items:center;gap:6px;user-select:none;}
+.main-tab:hover{color:var(--text2);}
+.main-tab.active{color:var(--blue-bright);border-bottom-color:var(--blue);}
+.tab-view{display:none;flex:1;overflow:hidden;flex-direction:column;}
+.tab-view.active{display:flex;}
+
+/* ── SETTINGS PAGE ─────────────────────────────────────────────────── */
+.settings-page{overflow-y:auto;padding:24px;display:flex;flex-direction:column;gap:20px;max-width:720px;}
+.settings-card{background:rgba(12,16,24,.9);border:1px solid var(--border);border-radius:var(--r2);overflow:hidden;}
+.settings-card-head{padding:16px 20px;border-bottom:1px solid var(--border);display:flex;align-items:center;justify-content:space-between;}
+.settings-card-title{font-size:14px;font-weight:600;display:flex;align-items:center;gap:10px;}
+.settings-card-body{padding:20px;}
+.settings-row{display:flex;align-items:center;justify-content:space-between;padding:10px 0;border-bottom:1px solid var(--border);}
+.settings-row:last-child{border-bottom:none;}
+.settings-row-label{font-size:13px;font-weight:500;}
+.settings-row-desc{font-family:var(--mono);font-size:10px;color:var(--text3);margin-top:2px;}
+
+/* Toggle switch */
+.toggle{position:relative;width:40px;height:22px;flex-shrink:0;}
+.toggle input{opacity:0;width:0;height:0;position:absolute;}
+.toggle-track{position:absolute;inset:0;background:var(--bg3);border:1px solid var(--border2);border-radius:11px;cursor:pointer;transition:all .2s;}
+.toggle input:checked ~ .toggle-track{background:var(--blue);border-color:var(--blue);box-shadow:0 0 12px rgba(0,112,243,.4);}
+.toggle-thumb{position:absolute;top:2px;left:2px;width:16px;height:16px;background:#fff;border-radius:50%;transition:transform .2s;pointer-events:none;}
+.toggle input:checked ~ .toggle-track .toggle-thumb{transform:translateX(18px);}
+
+/* Status indicator row */
+.tg-status-row{display:flex;align-items:center;gap:10px;padding:10px 14px;background:var(--bg3);border:1px solid var(--border);border-radius:8px;margin-bottom:14px;}
+.tg-status-icon{font-size:18px;}
+.tg-status-text{flex:1;}
+.tg-status-title{font-size:12px;font-weight:600;}
+.tg-status-sub{font-family:var(--mono);font-size:10px;color:var(--text3);margin-top:1px;}
+
+/* Telegram event toggles */
+.tg-events{display:flex;flex-direction:column;gap:0;}
+.tg-event-row{display:flex;align-items:center;justify-content:space-between;padding:8px 0;border-bottom:1px solid var(--border);}
+.tg-event-row:last-child{border-bottom:none;}
+.tg-event-label{font-size:12px;display:flex;align-items:center;gap:8px;}
+.tg-event-icon{font-size:14px;width:20px;text-align:center;}
+
+/* Test result banner */
+.test-banner{padding:10px 14px;border-radius:7px;font-family:var(--mono);font-size:11px;margin-top:12px;display:none;}
+.test-banner.ok{background:rgba(0,214,143,.1);border:1px solid rgba(0,214,143,.25);color:var(--green);}
+.test-banner.fail{background:rgba(255,59,92,.1);border:1px solid rgba(255,59,92,.25);color:var(--red);}
+
+/* Telegram message preview */
+.tg-preview{background:#1a1f2e;border:1px solid var(--border2);border-radius:10px;padding:14px;font-family:var(--mono);font-size:11px;line-height:1.7;color:#e8edf5;max-height:200px;overflow-y:auto;}
+.tg-preview b{color:#fff;font-weight:600;}
+.tg-preview code{background:rgba(255,255,255,.08);padding:1px 5px;border-radius:3px;font-size:10px;color:#79c0ff;}
+.tg-preview .tg-divider{color:#3d5a8a;}
+.tg-preview .tg-green{color:#3fb950;}
+.tg-preview .tg-red{color:#f85149;}
+.tg-preview .tg-blue{color:#58a6ff;}
+</style>
+</head>
+<body>
+
+<!-- ── ANIMATED BACKGROUND ─────────────────────────────────────────────── -->
+<canvas id="bg-canvas"></canvas>
+
+<div id="app">
+
+<!-- HEADER -->
+<header>
+  <div style="display:flex;align-items:center;gap:12px;">
+    <div class="logo-mark" style="width:32px;height:32px;font-size:13px;border-radius:8px;background:linear-gradient(135deg,#0070f3,#0040c0);box-shadow:0 0 24px rgba(0,112,243,.5);">OR</div>
+    <span class="logo-text">Omni<span>Route</span></span>
+    <span class="logo-version">v2.1</span>
+  </div>
+  <div class="header-right">
+    <div class="hstat"><span class="hstat-label">Masters</span><span class="hstat-val" id="h-masters" style="color:var(--blue-bright)">—</span></div>
+    <div class="hdivider"></div>
+    <div class="hstat"><span class="hstat-label">Slaves</span><span class="hstat-val" id="h-slaves">—</span></div>
+    <div class="hdivider"></div>
+    <div class="hstat"><span class="hstat-label">Copied</span><span class="hstat-val" id="h-copied" style="color:var(--green)">—</span></div>
+    <div class="hdivider"></div>
+    <div class="hstat"><span class="hstat-label">Latency</span><span class="hstat-val" id="h-lat" style="color:var(--amber)">—</span></div>
+    <div class="hdivider"></div>
+    <div id="ws-pill">
+      <span class="dot dot-gray" id="ws-dot"></span>
+      <span id="ws-label" style="color:var(--text3)">Not Connected</span>
+    </div>
+  </div>
+</header>
+
+<main>
+
+<!-- ═══ SIDEBAR ════════════════════════════════════════════════════════ -->
+<aside class="sidebar">
+
+  <!-- SETUP GUIDE (collapsible) -->
+  <div class="sb-section">
+    <div class="sb-head" onclick="toggleSB('guide')">
+      <span class="sb-title">⚡ Quick Setup</span>
+      <span id="guide-arrow" style="color:var(--text3);font-size:11px">▾</span>
+    </div>
+    <div class="sb-body" id="guide-body">
+      <div class="setup-guide">
+        <div class="setup-guide-title">🔵 Why "Failed to Fetch"?</div>
+        <div style="font-family:var(--mono);font-size:10px;color:var(--text2);margin-bottom:10px;line-height:1.6;">
+          The dashboard needs the Python bridge server running. Start it first:
+        </div>
+        <div class="setup-step"><span class="setup-num">1</span><span class="setup-text">On your VPS: <span class="setup-code">pip install -r requirements.txt</span></span></div>
+        <div class="setup-step"><span class="setup-num">2</span><span class="setup-text">Run: <span class="setup-code">python bridge/main.py</span></span></div>
+        <div class="setup-step"><span class="setup-num">3</span><span class="setup-text">Enter the VPS IP below, e.g. <span class="setup-code">http://192.168.1.10:8000</span></span></div>
+        <div class="setup-step"><span class="setup-num">4</span><span class="setup-text">Click <strong>Connect</strong> → red light turns blue ✓</span></div>
+      </div>
+      <div class="setup-guide" style="margin-bottom:0;background:rgba(255,173,13,.04);border-color:rgba(255,173,13,.15);">
+        <div class="setup-guide-title" style="color:var(--amber);">🔑 API Key Setup</div>
+        <div style="font-family:var(--mono);font-size:10px;color:var(--text2);line-height:1.6;">
+          In your <span class="setup-code">.env</span> file set <span class="setup-code">API_SECRET=yourkey</span>, then paste the same key in the field below. All requests will send it as <span class="setup-code">X-API-Key</span> header.
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- BRIDGE CONFIG -->
+  <div class="sb-section">
+    <div class="sb-head" onclick="toggleSB('cfg')">
+      <span class="sb-title">Bridge Config</span>
+      <span id="cfg-arrow" style="color:var(--text3);font-size:11px">▾</span>
+    </div>
+    <div class="sb-body" id="cfg-body">
+      <div class="fg">
+        <div class="fl">
+          Bridge URL
+          <div class="tip"><div class="tip-icon">?</div><div class="tip-box">The address of your running Python bridge. Use http://127.0.0.1:8000 if running locally, or http://YOUR_VPS_IP:8000 for a remote server.</div></div>
+        </div>
+        <input class="fi" id="cfg-url" value="http://127.0.0.1:8000" placeholder="http://127.0.0.1:8000"/>
+      </div>
+      <div class="fg">
+        <div class="fl">
+          API Key
+          <div class="tip"><div class="tip-icon">?</div><div class="tip-box">Optional security key. Set API_SECRET in your .env file on the server. Paste the same value here to authenticate all dashboard requests.</div></div>
+        </div>
+        <input class="fi" id="cfg-apikey" type="password" placeholder="Leave blank if not configured"/>
+      </div>
+      <button class="btn btn-primary btn-full btn-sm" onclick="connectBridge()">⚡ Connect to Bridge</button>
+      <div id="bridge-error" style="display:none;margin-top:8px;padding:8px;background:rgba(255,59,92,.08);border:1px solid rgba(255,59,92,.2);border-radius:6px;font-family:var(--mono);font-size:10px;color:var(--red);line-height:1.5;"></div>
+    </div>
+  </div>
+
+  <!-- ADD ACCOUNT -->
+  <div class="sb-section">
+    <div class="sb-head" onclick="toggleSB('add')">
+      <span class="sb-title">Add MT5 Account</span>
+      <span id="add-arrow" style="color:var(--text3);font-size:11px">▾</span>
+    </div>
+    <div class="sb-body" id="add-body">
+      <div class="role-toggle">
+        <button class="role-btn active" id="role-master" onclick="setRole('master')">⬆ Master</button>
+        <button class="role-btn" id="role-slave" onclick="setRole('slave')">⬇ Slave</button>
+      </div>
+      <div class="fg"><label class="fl">Label *</label><input class="fi" id="f-label" placeholder="e.g. Master A"/></div>
+      <div class="frow">
+        <div class="fg"><label class="fl">Login *</label><input class="fi" id="f-login" type="number" placeholder="12345678"/></div>
+        <div class="fg"><label class="fl">Password *</label><input class="fi" id="f-pass" type="password" placeholder="••••••"/></div>
+      </div>
+      <div class="fg"><label class="fl">Broker Server *</label><input class="fi" id="f-server" placeholder="BrokerName-Live01"/></div>
+      <div class="fg">
+        <div class="fl">Terminal Path <div class="tip"><div class="tip-icon">?</div><div class="tip-box">Full path to terminal64.exe on your Windows VPS. Default works for standard MT5 installs.</div></div></div>
+        <input class="fi" id="f-path" placeholder="C:\Program Files\MT5\terminal64.exe"/>
+      </div>
+      <div id="master-fields">
+        <div class="fg">
+          <div class="fl">Magic Number * <div class="tip"><div class="tip-icon">?</div><div class="tip-box">Set this same number in your Master EA's Magic Number input. When the EA fires a signal with this number, the bridge routes it to linked slaves.</div></div></div>
+          <input class="fi" id="f-magic" type="number" placeholder="e.g. 111"/>
+        </div>
+      </div>
+      <div id="slave-fields" style="display:none">
+        <div class="fg"><label class="fl">Lot Sizing</label>
+          <select class="fi" id="f-lot-mode">
+            <option value="equity_ratio">Equity Ratio (recommended)</option>
+            <option value="fixed">Fixed Lot</option>
+            <option value="multiplier">Multiplier</option>
+          </select>
+        </div>
+        <div class="frow">
+          <div class="fg"><label class="fl">Max Lot</label><input class="fi" id="f-maxlot" type="number" step="0.01" placeholder="10.0"/></div>
+          <div class="fg"><label class="fl">Multiplier</label><input class="fi" id="f-mult" type="number" step="0.1" placeholder="1.0"/></div>
+        </div>
+      </div>
+      <button class="btn btn-primary btn-full" onclick="addAccount()">Add Account</button>
+    </div>
+  </div>
+
+  <!-- SYMBOL MAP -->
+  <div class="sb-section">
+    <div class="sb-head" onclick="toggleSB('sym')">
+      <span class="sb-title">Global Symbol Map</span>
+      <span id="sym-arrow" style="color:var(--text3);font-size:11px">▸</span>
+    </div>
+    <div class="sb-body" id="sym-body" style="display:none">
+      <div style="font-family:var(--mono);font-size:10px;color:var(--text2);margin-bottom:10px;line-height:1.6;background:rgba(0,112,243,.05);border:1px solid rgba(0,112,243,.15);border-radius:6px;padding:8px;">
+        Translates symbol names between brokers. Example: Master uses <strong style="color:var(--blue-bright)">GOLD</strong>, Slave broker calls it <strong style="color:var(--blue-bright)">XAUUSD</strong> — add a mapping so orders reach the correct instrument.
+      </div>
+      <div id="sym-list" style="margin-bottom:10px;display:flex;flex-direction:column;gap:5px;"></div>
+      <div class="frow" style="margin-bottom:8px">
+        <input class="fi" id="sym-from" placeholder="Master symbol"/>
+        <input class="fi" id="sym-to" placeholder="Slave symbol"/>
+      </div>
+      <button class="btn btn-ghost btn-full btn-sm" onclick="addSymMap()">+ Add Mapping</button>
+    </div>
+  </div>
+
+  <div style="flex:1"></div>
+  <div style="padding:12px 16px;border-top:1px solid var(--border);display:flex;justify-content:space-between;align-items:center;">
+    <span style="font-family:var(--mono);font-size:10px;color:var(--text3)" id="clock">—</span>
+    <span style="font-family:var(--mono);font-size:10px;color:var(--text3)">UTC</span>
+  </div>
+</aside>
+
+<!-- ═══ CONTENT ═════════════════════════════════════════════════════════ -->
+<div class="content">
+
+  <!-- Stat bar -->
+  <div class="stat-bar">
+    <div class="stat-cell"><span class="stat-label">Masters Online</span><span class="stat-value" id="s-masters" style="color:var(--blue-bright)">—</span></div>
+    <div class="stat-cell"><span class="stat-label">Slaves Online</span><span class="stat-value" id="s-slaves">—</span></div>
+    <div class="stat-cell"><span class="stat-label">Copied Today</span><span class="stat-value" id="s-copied" style="color:var(--green)">—</span></div>
+    <div class="stat-cell"><span class="stat-label">Failed Today</span><span class="stat-value" id="s-failed" style="color:var(--red)">—</span></div>
+    <div class="stat-cell"><span class="stat-label">Avg Latency</span><span class="stat-value" id="s-lat" style="color:var(--amber)">—</span></div>
+  </div>
+
+  <!-- Main nav tabs -->
+  <div class="main-tabs">
+    <div class="main-tab active" id="maintab-dashboard" onclick="switchMainTab('dashboard')">⬛ Dashboard</div>
+    <div class="main-tab" id="maintab-settings" onclick="switchMainTab('settings')">⚙ Settings</div>
+  </div>
+
+  <!-- Dashboard tab -->
+  <div class="tab-view active" id="tabview-dashboard">
+  <div class="panel-grid">
+    <!-- Masters + log -->
+    <div style="display:flex;flex-direction:column;overflow:hidden;">
+      <div class="sec-head">
+        <span class="sec-title">Master Accounts</span>
+        <span id="master-count" class="tag tag-blue">0 masters</span>
+      </div>
+      <div id="masters-grid" class="masters-grid"></div>
+
+      <!-- Activity Log -->
+      <div class="log-panel">
+        <div class="log-toolbar">
+          <span class="sec-title" style="font-size:9px;">Activity Log</span>
+          <div class="log-filter-group">
+            <span class="log-filter-label">Level:</span>
+            <button class="btn btn-xs" id="tab-all"   onclick="setLogTab('all')"   style="border:1px solid var(--blue);color:var(--blue);">All</button>
+            <button class="btn btn-ghost btn-xs" id="tab-error" onclick="setLogTab('error')">Errors</button>
+          </div>
+          <div class="log-filter-group">
+            <span class="log-filter-label">Master:</span>
+            <select class="fi" id="log-master-filter" onchange="renderLog()" style="width:140px;padding:3px 8px;font-size:10px;height:24px;">
+              <option value="">All Masters</option>
+            </select>
+          </div>
+          <button class="btn btn-ghost btn-xs" style="margin-left:auto" onclick="clearLocalLog()">Clear</button>
+        </div>
+        <div id="log-entries" class="log-entries"></div>
+      </div>
+    </div>
+
+    <!-- Slaves panel -->
+    <div class="slaves-panel">
+      <div class="sec-head"><span class="sec-title">Slave Accounts</span><span id="slave-count" class="tag tag-gray">0</span></div>
+      <div id="slave-list" class="slave-list"></div>
+    </div>
+  </div><!-- /panel-grid inside dashboard tab -->
+  </div><!-- /tabview-dashboard -->
+
+  <!-- ═══ SETTINGS TAB ════════════════════════════════════════════════ -->
+  <div class="tab-view" id="tabview-settings">
+    <div class="settings-page">
+
+      <!-- Telegram Configuration Card -->
+      <div class="settings-card">
+        <div class="settings-card-head">
+          <div class="settings-card-title">
+            <span style="font-size:20px;">✈️</span>
+            Telegram Notifications
+          </div>
+          <div style="display:flex;align-items:center;gap:10px;">
+            <span id="tg-status-badge" class="tag tag-gray">Not configured</span>
+            <label class="toggle" title="Master toggle for all Telegram notifications">
+              <input type="checkbox" id="tg-master-toggle" onchange="toggleTelegram(this.checked)"/>
+              <div class="toggle-track"><div class="toggle-thumb"></div></div>
+            </label>
+          </div>
+        </div>
+        <div class="settings-card-body">
+
+          <!-- Status row -->
+          <div class="tg-status-row" id="tg-status-row">
+            <span class="tg-status-icon">🔘</span>
+            <div class="tg-status-text">
+              <div class="tg-status-title" id="tg-status-title">Not Configured</div>
+              <div class="tg-status-sub" id="tg-status-sub">Add your bot token and chat ID below</div>
+            </div>
+          </div>
+
+          <!-- Credentials -->
+          <div class="fg">
+            <div class="fl">
+              Bot Token
+              <div class="tip"><div class="tip-icon">?</div><div class="tip-box">Get from @BotFather on Telegram. Send /newbot and copy the token it gives you.</div></div>
+            </div>
+            <input class="fi" id="tg-token" type="password" placeholder="7123456789:AAFxxxxxxxxxxxxxxxxxxxxxxxxxxxx"/>
+          </div>
+          <div class="fg">
+            <div class="fl">
+              Chat ID
+              <div class="tip"><div class="tip-icon">?</div><div class="tip-box">Your personal ID or group ID. For groups it starts with -100. Use @userinfobot to find yours, or check the .env.example for instructions.</div></div>
+            </div>
+            <input class="fi" id="tg-chatid" placeholder="-1001234567890 or 123456789"/>
+          </div>
+          <div style="display:flex;gap:8px;margin-top:4px;">
+            <button class="btn btn-primary btn-sm" onclick="saveTelegramConfig()">Save Config</button>
+            <button class="btn btn-ghost btn-sm" onclick="testTelegram()">Send Test Message</button>
+          </div>
+          <div class="test-banner" id="tg-test-banner"></div>
+
+          <!-- Per-event toggles -->
+          <div style="margin-top:20px;margin-bottom:8px;">
+            <div style="font-family:var(--mono);font-size:10px;color:var(--text2);text-transform:uppercase;letter-spacing:.8px;margin-bottom:10px;">Notification Events</div>
+            <div class="tg-events">
+              <div class="tg-event-row">
+                <div class="tg-event-label"><span class="tg-event-icon">📡</span>Trade signal detected on Master</div>
+                <label class="toggle"><input type="checkbox" id="evt-detected" checked onchange="saveEventPrefs()"/><div class="toggle-track"><div class="toggle-thumb"></div></div></label>
+              </div>
+              <div class="tg-event-row">
+                <div class="tg-event-label"><span class="tg-event-icon">✅</span>Trade successfully copied to Slave</div>
+                <label class="toggle"><input type="checkbox" id="evt-copied" checked onchange="saveEventPrefs()"/><div class="toggle-track"><div class="toggle-thumb"></div></div></label>
+              </div>
+              <div class="tg-event-row">
+                <div class="tg-event-label"><span class="tg-event-icon">❌</span>Trade copy failed (error)</div>
+                <label class="toggle"><input type="checkbox" id="evt-failed" checked onchange="saveEventPrefs()"/><div class="toggle-track"><div class="toggle-thumb"></div></div></label>
+              </div>
+              <div class="tg-event-row">
+                <div class="tg-event-label"><span class="tg-event-icon">🔗</span>Slave connected / disconnected</div>
+                <label class="toggle"><input type="checkbox" id="evt-slave-conn" checked onchange="saveEventPrefs()"/><div class="toggle-track"><div class="toggle-thumb"></div></div></label>
+              </div>
+              <div class="tg-event-row">
+                <div class="tg-event-label"><span class="tg-event-icon">🟦</span>Master connected / error</div>
+                <label class="toggle"><input type="checkbox" id="evt-master-conn" checked onchange="saveEventPrefs()"/><div class="toggle-track"><div class="toggle-thumb"></div></div></label>
+              </div>
+              <div class="tg-event-row">
+                <div class="tg-event-label"><span class="tg-event-icon">🚀</span>Bridge started / stopped</div>
+                <label class="toggle"><input type="checkbox" id="evt-bridge" checked onchange="saveEventPrefs()"/><div class="toggle-track"><div class="toggle-thumb"></div></div></label>
+              </div>
+            </div>
+          </div>
+
+          <!-- Message preview -->
+          <div style="margin-top:16px;">
+            <div style="font-family:var(--mono);font-size:10px;color:var(--text2);text-transform:uppercase;letter-spacing:.8px;margin-bottom:8px;">Message Preview</div>
+            <div style="display:flex;gap:6px;margin-bottom:8px;">
+              <button class="btn btn-ghost btn-xs" onclick="showPreview('detected')" style="font-size:10px;">Signal</button>
+              <button class="btn btn-ghost btn-xs" onclick="showPreview('copied')" style="font-size:10px;">Copied</button>
+              <button class="btn btn-ghost btn-xs" onclick="showPreview('failed')" style="font-size:10px;">Failed</button>
+              <button class="btn btn-ghost btn-xs" onclick="showPreview('conn')" style="font-size:10px;">Connected</button>
+            </div>
+            <div class="tg-preview" id="tg-preview"></div>
+          </div>
+
+        </div>
+      </div><!-- /Telegram card -->
+
+      <!-- Branding info card -->
+      <div class="settings-card">
+        <div class="settings-card-head">
+          <div class="settings-card-title"><span style="font-size:20px;">🟦</span>Platform Info</div>
+        </div>
+        <div class="settings-card-body">
+          <div class="settings-row">
+            <div><div class="settings-row-label">Platform Name</div><div class="settings-row-desc">Branded identifier</div></div>
+            <span style="font-family:var(--mono);font-size:13px;font-weight:600;color:var(--blue-bright)">OmniRoute</span>
+          </div>
+          <div class="settings-row">
+            <div><div class="settings-row-label">Bridge Version</div></div>
+            <span class="tag tag-blue">v2.1.0</span>
+          </div>
+          <div class="settings-row">
+            <div><div class="settings-row-label">Bridge URL</div></div>
+            <span class="tag tag-gray" id="settings-bridge-url" style="font-size:10px;">—</span>
+          </div>
+          <div class="settings-row">
+            <div><div class="settings-row-label">WebSocket Status</div></div>
+            <span id="settings-ws-status" class="tag tag-gray">—</span>
+          </div>
+          <div class="settings-row">
+            <div><div class="settings-row-label">Bridge Uptime</div></div>
+            <span class="tag tag-gray" id="settings-uptime" style="font-size:10px;">—</span>
+          </div>
+          <div class="settings-row">
+            <div><div class="settings-row-label">Architecture</div><div class="settings-row-desc">Routing mode</div></div>
+            <span style="font-family:var(--mono);font-size:11px;color:var(--text2)">Multi-Master / Multi-Slave</span>
+          </div>
+        </div>
+      </div>
+
+    </div><!-- /settings-page -->
+  </div><!-- /tabview-settings -->
+
+</div><!-- /content -->
+</main>
+</div><!-- /app -->
+
+<!-- Quote strip -->
+<div id="quote-strip"><div id="quote-inner"></div></div>
+
+<!-- LINK MODAL -->
+<div class="modal-backdrop hidden" id="link-modal">
+  <div class="modal">
+    <div class="modal-header">
+      <span class="modal-title">Link Slave → <span id="link-master-name"></span></span>
+      <button class="modal-close" onclick="closeModal('link-modal')">✕</button>
+    </div>
+    <div class="modal-body">
+      <p style="font-size:11px;color:var(--text2);margin-bottom:12px;font-family:var(--mono);">Select a slave to receive signals from this master. Already-linked slaves are shown dimmed.</p>
+      <div id="link-slave-list"></div>
+    </div>
+    <div class="modal-footer"><button class="btn btn-ghost btn-sm" onclick="closeModal('link-modal')">Close</button></div>
+  </div>
+</div>
+
+<!-- CONFIRM MODAL -->
+<div class="modal-backdrop hidden" id="confirm-modal">
+  <div class="modal">
+    <div class="modal-header"><span class="modal-title">Confirm</span><button class="modal-close" onclick="closeModal('confirm-modal')">✕</button></div>
+    <div class="modal-body"><p style="font-size:13px;" id="confirm-msg"></p></div>
+    <div class="modal-footer">
+      <button class="btn btn-ghost btn-sm" onclick="closeModal('confirm-modal')">Cancel</button>
+      <button class="btn btn-danger btn-sm" id="confirm-ok">Confirm</button>
+    </div>
+  </div>
+</div>
+
+<div id="toasts"></div>
+
+<script>
+// ══════════════════════════════════════════════════════════════════════
+// ANIMATED BACKGROUND: Stars + Chart Patterns + Constellations
+// ══════════════════════════════════════════════════════════════════════
+(function(){
+const canvas = document.getElementById('bg-canvas');
+const ctx    = canvas.getContext('2d');
+let W,H,stars=[],patterns=[],constellations=[];
+const BLUE = '#0070f3', BLUE2 = '#3b9eff';
+
+function resize(){
+  W = canvas.width  = window.innerWidth;
+  H = canvas.height = window.innerHeight;
+}
+window.addEventListener('resize', resize);
+resize();
+
+// ── Stars ──────────────────────────────────────────────────────────
+function mkStars(){
+  stars = Array.from({length:200}, () => ({
+    x: Math.random()*W, y: Math.random()*H,
+    r: Math.random()*1.4 + 0.3,
+    a: Math.random(), da: (Math.random()-.5)*.008,
+    speed: Math.random()*.15 + .05,
+  }));
+}
+
+function drawStars(){
+  stars.forEach(s => {
+    s.a = Math.max(.05, Math.min(1, s.a + s.da));
+    if(s.a <= .05 || s.a >= 1) s.da *= -1;
+    s.x -= s.speed;
+    if(s.x < -2) s.x = W + 2;
+    ctx.beginPath();
+    ctx.arc(s.x, s.y, s.r, 0, Math.PI*2);
+    ctx.fillStyle = `rgba(59,158,255,${s.a * .7})`;
+    ctx.fill();
+  });
+}
+
+// ── Constellation cluster ──────────────────────────────────────────
+class Constellation {
+  constructor(){this.reset(true);}
+  reset(init=false){
+    this.cx = Math.random()*W;
+    this.cy = Math.random()*H;
+    this.pts = Array.from({length:Math.floor(Math.random()*5+4)}, () => ({
+      ox: (Math.random()-.5)*160,
+      oy: (Math.random()-.5)*160,
+    }));
+    // Build edges (spanning-tree style for clarity)
+    this.edges=[];
+    for(let i=1;i<this.pts.length;i++){
+      this.edges.push([i-1, i]);
+      if(i>2 && Math.random()>.5) this.edges.push([Math.floor(Math.random()*i), i]);
+    }
+    this.angle  = Math.random()*Math.PI*2;
+    this.dAngle = (Math.random()-.5)*.002;
+    this.alpha  = 0;
+    this.phase  = init ? 'in' : 'in';
+    this.life   = 0;
+    this.maxLife= 280 + Math.random()*200;
+    this.fadeSpeed = .006;
+  }
+  draw(){
+    this.life++;
+    if(this.phase==='in'){ this.alpha=Math.min(.55, this.alpha+this.fadeSpeed); if(this.alpha>=.55) this.phase='hold'; }
+    else if(this.phase==='hold'){ if(this.life>this.maxLife) this.phase='out'; }
+    else{ this.alpha=Math.max(0, this.alpha-this.fadeSpeed); if(this.alpha<=0){this.reset();return;} }
+    this.angle += this.dAngle;
+    const pts = this.pts.map(p => {
+      const rx = p.ox*Math.cos(this.angle) - p.oy*Math.sin(this.angle);
+      const ry = p.ox*Math.sin(this.angle) + p.oy*Math.cos(this.angle);
+      return {x: this.cx+rx, y: this.cy+ry};
+    });
+    ctx.strokeStyle = `rgba(0,112,243,${this.alpha*.5})`;
+    ctx.lineWidth = .6;
+    this.edges.forEach(([a,b]) => {
+      ctx.beginPath(); ctx.moveTo(pts[a].x,pts[a].y); ctx.lineTo(pts[b].x,pts[b].y); ctx.stroke();
+    });
+    pts.forEach(p => {
+      ctx.beginPath(); ctx.arc(p.x,p.y,1.5,0,Math.PI*2);
+      ctx.fillStyle = `rgba(59,158,255,${this.alpha})`;
+      ctx.fill();
+      // Tiny glow
+      ctx.beginPath(); ctx.arc(p.x,p.y,4,0,Math.PI*2);
+      ctx.fillStyle = `rgba(0,112,243,${this.alpha*.15})`;
+      ctx.fill();
+    });
+  }
+}
+
+function mkConstellations(){ constellations = Array.from({length:6}, ()=>new Constellation()); }
+
+// ── Chart Patterns ─────────────────────────────────────────────────
+const PATTERN_TYPES = ['head_shoulders','double_top','bull_flag','channel','triangle','doji_candles'];
+
+class ChartPattern {
+  constructor(){ this.reset(true); }
+  reset(init=false){
+    this.type  = PATTERN_TYPES[Math.floor(Math.random()*PATTERN_TYPES.length)];
+    this.x     = Math.random()*(W-220)+80;
+    this.y     = Math.random()*(H-160)+80;
+    this.scale = Math.random()*0.7+0.6;
+    this.alpha = 0;
+    this.phase = 'in';
+    this.life  = 0;
+    this.maxLife = 220+Math.random()*160;
+    this.fadeSpeed = .005;
+    this.color = Math.random()>.5 ? BLUE : BLUE2;
+  }
+  buildPath(type){
+    // Returns array of [x,y] points
+    const s = this.scale;
+    switch(type){
+      case 'head_shoulders': return [
+        [0,0],[20,-20*s],[40,5],[60,-40*s],[80,5],[100,-20*s],[120,0]
+      ];
+      case 'double_top': return [
+        [0,10],[20,-35*s],[40,0],[60,-35*s],[80,10],[100,20]
+      ];
+      case 'bull_flag': return [
+        [0,30*s],[30,-10*s],[35,-5*s],[70,-30*s],[75,-25*s],[110,-50*s]
+      ];
+      case 'channel': return [
+        [0,0],[25,-10*s],[50,5*s],[75,-5*s],[100,10*s],
+        [100,25*s],[75,10*s],[50,20*s],[25,5*s],[0,15*s],[0,0]
+      ];
+      case 'triangle': return [
+        [0,40*s],[80,0],[0,-40*s],[0,40*s]
+      ];
+      case 'doji_candles': return null; // drawn specially
+    }
+  }
+  draw(){
+    this.life++;
+    const fs = this.fadeSpeed;
+    if(this.phase==='in'){ this.alpha=Math.min(.35,this.alpha+fs); if(this.alpha>=.35) this.phase='hold'; }
+    else if(this.phase==='hold'){ if(this.life>this.maxLife) this.phase='out'; }
+    else{ this.alpha=Math.max(0,this.alpha-fs); if(this.alpha<=0){this.reset();return;} }
+
+    ctx.save();
+    ctx.translate(this.x, this.y);
+    const a = this.alpha;
+    const col = `rgba(0,112,243,${a})`;
+    const colD = `rgba(59,158,255,${a*.5})`;
+
+    if(this.type==='doji_candles'){
+      // Draw 5 mini candles
+      for(let i=0;i<5;i++){
+        const cx = (i-2)*18*this.scale;
+        const ch = (Math.random()*30+10)*this.scale;
+        const bull = Math.random()>.5;
+        ctx.strokeStyle = bull ? `rgba(0,214,143,${a})` : `rgba(255,59,92,${a})`;
+        ctx.fillStyle   = bull ? `rgba(0,214,143,${a*.3})` : `rgba(255,59,92,${a*.3})`;
+        ctx.lineWidth   = 1;
+        const body = ch*.4;
+        ctx.fillRect(cx-5*this.scale, -body/2, 10*this.scale, body);
+        ctx.strokeRect(cx-5*this.scale, -body/2, 10*this.scale, body);
+        ctx.beginPath();
+        ctx.moveTo(cx, -ch/2); ctx.lineTo(cx, -body/2);
+        ctx.moveTo(cx, body/2); ctx.lineTo(cx, ch/2);
+        ctx.stroke();
+      }
+    } else {
+      const pts = this.buildPath(this.type);
+      if(!pts){ctx.restore();return;}
+      ctx.beginPath();
+      ctx.moveTo(pts[0][0], pts[0][1]);
+      pts.slice(1).forEach(([px,py]) => ctx.lineTo(px, py));
+      ctx.strokeStyle = col;
+      ctx.lineWidth   = 1.2;
+      ctx.stroke();
+      // Label
+      ctx.fillStyle = colD;
+      ctx.font = `${Math.floor(9*this.scale)}px 'Geist Mono',monospace`;
+      const labels = {head_shoulders:'HEAD & SHOULDERS',double_top:'DOUBLE TOP',bull_flag:'BULL FLAG',channel:'CHANNEL',triangle:'TRIANGLE'};
+      ctx.fillText(labels[this.type]||this.type.toUpperCase(), 0, 30*this.scale);
+    }
+    ctx.restore();
+  }
+}
+
+function mkPatterns(){ patterns = Array.from({length:7}, ()=>new ChartPattern()); }
+
+mkStars(); mkConstellations(); mkPatterns();
+
+function animate(){
+  ctx.clearRect(0,0,W,H);
+  // Deep radial vignette
+  const grad = ctx.createRadialGradient(W/2,H/2,0,W/2,H/2,W*.7);
+  grad.addColorStop(0,'rgba(0,16,40,.04)');
+  grad.addColorStop(1,'rgba(0,0,0,.0)');
+  ctx.fillStyle=grad; ctx.fillRect(0,0,W,H);
+
+  drawStars();
+  constellations.forEach(c=>c.draw());
+  patterns.forEach(p=>p.draw());
+  requestAnimationFrame(animate);
+}
+animate();
+})();
+
+// ══════════════════════════════════════════════════════════════════════
+// TRADING PSYCHOLOGY QUOTES TICKER
+// ══════════════════════════════════════════════════════════════════════
+const QUOTES = [
+  "The trend is your friend until the end where it bends. — Ed Seykota",
+  "Cut your losses short and let your profits run. — Jesse Livermore",
+  "Risk comes from not knowing what you're doing. — Warren Buffett",
+  "The goal of a successful trader is to make the best trades. Money is secondary. — Alexander Elder",
+  "In trading, the impossible happens about twice a year. — Henri M. Simoes",
+  "Markets are never wrong — opinions often are. — Jesse Livermore",
+  "The most important thing in trading is capital preservation. — Paul Tudor Jones",
+  "Win or lose, everybody gets what they want out of the market. — Ed Seykota",
+  "Do more of what works and less of what doesn't. — Steve Clark",
+  "The key is consistency and discipline. — Michael Marcus",
+  "Trade what you see, not what you think. — Ancient trading proverb",
+  "Amateurs want to be right. Professionals want to make money. — Unknown",
+  "Price is the only truth. Everything else is an opinion. — Unknown",
+  "Your biggest enemy as a trader is yourself. — Unknown",
+  "Patience is the ultimate edge in any market. — Unknown",
+];
+
+(function buildTicker(){
+  const inner = document.getElementById('quote-inner');
+  // Duplicate for seamless loop
+  const all = [...QUOTES,...QUOTES];
+  inner.innerHTML = all.map(q=>`<span class="q-item">${q}</span>`).join('');
+})();
+
+// ══════════════════════════════════════════════════════════════════════
+// APP STATE
+// ══════════════════════════════════════════════════════════════════════
+let BRIDGE='http://127.0.0.1:8000', ws=null, wsActive=false;
+let logTab='all', localLogs=[], symMap={}, currentRole='master';
+let mastersData=[], slavesData=[];
+let _linkMasterId=null, _confirmCb=null;
+const sbState={guide:true,cfg:true,add:true,sym:false};
+
+// Clock
+setInterval(()=>{ document.getElementById('clock').textContent=new Date().toUTCString().slice(17,25); },1000);
+
+// ══════════════════════════════════════════════════════════════════════
+// SIDEBAR TOGGLES
+// ══════════════════════════════════════════════════════════════════════
+function toggleSB(id){
+  sbState[id]=!sbState[id];
+  const body  = document.getElementById(id+'-body');
+  const arrow = document.getElementById(id+'-arrow');
+  body.style.display  = sbState[id]?'block':'none';
+  arrow.textContent   = sbState[id]?'▾':'▸';
+}
+
+function setRole(r){
+  currentRole=r;
+  document.getElementById('role-master').classList.toggle('active',r==='master');
+  document.getElementById('role-slave').classList.toggle('active',r==='slave');
+  document.getElementById('master-fields').style.display=r==='master'?'block':'none';
+  document.getElementById('slave-fields').style.display=r==='slave'?'block':'none';
+}
+
+// ══════════════════════════════════════════════════════════════════════
+// WEBSOCKET + BRIDGE CONNECTION
+// ══════════════════════════════════════════════════════════════════════
+function connectBridge(){
+  BRIDGE = document.getElementById('cfg-url').value.replace(/\/$/,'');
+  hideBridgeError();
+  if(ws){ws.close();ws=null;}
+
+  const wsUrl = BRIDGE.replace(/^http/,'ws')+'/ws/status';
+  try{
+    ws=new WebSocket(wsUrl);
+    ws.onopen=()=>{
+      wsActive=true;
+      setPill('blue','Live · '+BRIDGE.replace('http://',''));
+      refreshAll();
+    };
+    ws.onmessage=e=>{
+      try{ const msg=JSON.parse(e.data); if(msg.type==='status') applyStatus(msg.data); }catch(e){}
+    };
+    ws.onclose=()=>{
+      wsActive=false;
+      setPill('gray','Disconnected');
+      setTimeout(()=>{if(!wsActive) connectBridge();},5000);
+    };
+    ws.onerror=()=>{
+      wsActive=false;
+      setPill('red','Error — Check bridge URL');
+      showBridgeError(`Cannot reach ${BRIDGE}\n\nMake sure:\n1. Python bridge is running: python bridge/main.py\n2. Port 8000 is open\n3. URL is correct (VPS IP or localhost)`);
+    };
+  }catch(err){
+    setPill('red','Failed');
+    showBridgeError(err.message);
+  }
+}
+
+function setPill(color,label){
+  const dot=document.getElementById('ws-dot'), lbl=document.getElementById('ws-label');
+  dot.className=`dot dot-${color}`;
+  lbl.textContent=label;
+  lbl.style.color=color==='blue'?'var(--blue-bright)':color==='red'?'var(--red)':'var(--text3)';
+}
+
+function showBridgeError(msg){
+  const el=document.getElementById('bridge-error');
+  el.style.display='block';
+  el.style.whiteSpace='pre-wrap';
+  el.textContent=msg;
+}
+function hideBridgeError(){ document.getElementById('bridge-error').style.display='none'; }
+
+// ══════════════════════════════════════════════════════════════════════
+// STATUS
+// ══════════════════════════════════════════════════════════════════════
+function applyStatus(s){
+  mastersData=s.masters||[];
+  slavesData=s.slaves||[];
+  document.getElementById('h-masters').textContent=`${s.masters_connected}/${s.masters_total}`;
+  document.getElementById('h-slaves').textContent=`${s.slaves_connected}/${s.slaves_total}`;
+  document.getElementById('h-copied').textContent=s.trades_copied_today??0;
+  const lat=s.avg_latency_ms??0;
+  document.getElementById('h-lat').textContent=lat?`${lat.toFixed(1)}ms`:'—';
+  document.getElementById('s-masters').textContent=`${s.masters_connected}/${s.masters_total}`;
+  document.getElementById('s-slaves').textContent=`${s.slaves_connected}/${s.slaves_total}`;
+  document.getElementById('s-copied').textContent=s.trades_copied_today??0;
+  document.getElementById('s-failed').textContent=s.trades_failed_today??0;
+  const latEl=document.getElementById('s-lat');
+  latEl.textContent=lat?`${lat.toFixed(1)}ms`:'—';
+  latEl.style.color=lat<50?'var(--green)':lat<100?'var(--amber)':'var(--red)';
+  renderMasters(); renderSlaves(); updateLogMasterFilter();
+}
+
+async function refreshAll(){
+  try{
+    const s=await apiFetch('/status'); applyStatus(s);
+    const logs=await apiFetch('/logs?limit=400'); localLogs=logs; renderLog();
+    const sm=await apiFetch('/symbol-map'); symMap=sm.global||{}; renderSymMap();
+    hideBridgeError();
+  }catch(e){
+    setPill('red','Unreachable');
+    showBridgeError(`Cannot reach ${BRIDGE}\n\nThe Python bridge server is not running or the URL is wrong.\n\nStart it with: python bridge/main.py`);
+  }
+}
+
+// ══════════════════════════════════════════════════════════════════════
+// RENDER MASTERS
+// ══════════════════════════════════════════════════════════════════════
+function renderMasters(){
+  const el=document.getElementById('masters-grid');
+  document.getElementById('master-count').textContent=`${mastersData.length} master${mastersData.length!==1?'s':''}`;
+  if(!mastersData.length){
+    el.innerHTML=`<div class="empty-state"><div class="empty-icon">⬆</div><div class="empty-title">No Masters Registered</div><div class="empty-sub">Add a master account from the sidebar</div></div>`;
+    return;
+  }
+  el.innerHTML=mastersData.map(m=>{
+    const conn=m.connection_status==='connected', err=m.connection_status==='error';
+    const dotCls=conn?'dot-blue':err?'dot-red':'dot-gray';
+    const cardCls=conn?'connected':err?'error':'';
+    const linked=m.linked_slaves||[];
+    const chips=linked.map(sid=>{
+      const s=slavesData.find(x=>x.account_id===sid);
+      if(!s) return '';
+      const sc=s.connection_status==='connected';
+      return `<div class="sub-chip">
+        <div style="display:flex;align-items:center;gap:8px;">
+          <span class="dot ${sc?'dot-blue':'dot-gray'}"></span>
+          <div><div class="sub-chip-label">${esc(s.label)}</div><div class="sub-chip-server">${esc(s.server)}</div></div>
+        </div>
+        <div style="display:flex;align-items:center;gap:8px;">
+          <span class="sub-chip-eq">$${fmt(s.equity)}</span>
+          <button class="chip-unlink" onclick="unlinkSlave('${m.master_id}','${sid}')" title="Unlink">✕</button>
+        </div>
+      </div>`;
+    }).join('');
+    return `<div class="master-card ${cardCls}">
+      <div class="mc-head">
+        <div style="display:flex;align-items:flex-start;gap:10px;">
+          <span class="dot ${dotCls}" style="margin-top:4px;"></span>
+          <div>
+            <div class="mc-label">${esc(m.label)}</div>
+            <div class="mc-meta">${err?`<span style="color:var(--red)">${esc(m.error||'Connection error')}</span>`:m.last_ping?'Ping '+relTime(m.last_ping):'Pending connection'}</div>
+          </div>
+        </div>
+        <div style="display:flex;align-items:center;gap:7px;flex-shrink:0;">
+          <span class="mc-magic">magic:${m.magic_number}</span>
+          <button class="btn btn-danger btn-xs" onclick="removeMaster('${m.master_id}','${esc(m.label)}')">Remove</button>
+        </div>
+      </div>
+      <div class="mc-stats">
+        <div class="mst"><div class="mst-l">Equity</div><div class="mst-v" style="color:var(--blue-bright)">$${fmt(m.equity)}</div></div>
+        <div class="mst"><div class="mst-l">Balance</div><div class="mst-v">$${fmt(m.balance)}</div></div>
+        <div class="mst"><div class="mst-l">Trades Today</div><div class="mst-v" style="color:var(--green)">${m.trades_today??0}</div></div>
+      </div>
+      <div class="subs-head">
+        <span class="subs-label">Subscribers (${linked.length})</span>
+        <button class="btn btn-ghost btn-xs" onclick="openLinkModal('${m.master_id}','${esc(m.label)}')">+ Link Slave</button>
+      </div>
+      <div class="subs-list">
+        ${linked.length?chips:'<div class="no-subs">No slaves linked — click + Link Slave to add</div>'}
+      </div>
+    </div>`;
+  }).join('');
+}
+
+// ══════════════════════════════════════════════════════════════════════
+// RENDER SLAVES
+// ══════════════════════════════════════════════════════════════════════
+function renderSlaves(){
+  const el=document.getElementById('slave-list');
+  document.getElementById('slave-count').textContent=`${slavesData.length}`;
+  if(!slavesData.length){
+    el.innerHTML=`<div class="empty-state" style="padding:28px 12px;"><div class="empty-icon">⬇</div><div class="empty-title">No Slaves</div><div class="empty-sub">Add slave accounts via the sidebar</div></div>`;
+    return;
+  }
+  el.innerHTML=slavesData.map(s=>{
+    const conn=s.connection_status==='connected', err=s.connection_status==='error';
+    const dotCls=conn?'dot-blue':err?'dot-red':'dot-gray';
+    const mids=s.master_ids||[];
+    const badges=mids.map(mid=>{ const m=mastersData.find(x=>x.master_id===mid); return m?`<span class="mbadge">${esc(m.label)}</span>`:''; }).join('');
+    const mode=s.lot_sizing_mode==='equity_ratio'?'EqRatio':s.lot_sizing_mode==='fixed'?'Fixed':'Mult';
+    return `<div class="slave-row">
+      <span class="dot ${dotCls}"></span>
+      <div class="slave-row-info">
+        <div class="slave-row-label">${esc(s.label)}</div>
+        <div class="slave-row-meta">${esc(s.server)} · <span class="tag tag-gray" style="font-size:9px;padding:0 4px;">${mode}</span></div>
+        <div class="slave-row-eq">$${fmt(s.equity)}</div>
+        ${mids.length?`<div class="mbadges">${badges}</div>`:'<div style="font-family:var(--mono);font-size:9px;color:var(--text3);margin-top:2px;">Unlinked</div>'}
+        ${s.open_trades?`<div style="font-family:var(--mono);font-size:9px;color:var(--text2);margin-top:2px;">${s.open_trades} open</div>`:''}
+        ${err?`<div style="font-family:var(--mono);font-size:9px;color:var(--red);margin-top:2px;">${esc(s.error||'Error')}</div>`:''}
+      </div>
+      <button class="btn btn-danger btn-xs" onclick="removeSlave('${s.account_id}','${esc(s.label)}')">✕</button>
+    </div>`;
+  }).join('');
+}
+
+// ══════════════════════════════════════════════════════════════════════
+// LOG WITH MASTER FILTER
+// ══════════════════════════════════════════════════════════════════════
+function updateLogMasterFilter(){
+  const sel=document.getElementById('log-master-filter');
+  const cur=sel.value;
+  sel.innerHTML='<option value="">All Masters</option>'+
+    mastersData.map(m=>`<option value="${m.master_id}">${esc(m.label)}</option>`).join('');
+  sel.value=cur;
+}
+
+function renderLog(){
+  const el=document.getElementById('log-entries');
+  const masterFilter=document.getElementById('log-master-filter').value;
+  let filtered=logTab==='error'?localLogs.filter(l=>l.level==='ERROR'):localLogs;
+  if(masterFilter) filtered=filtered.filter(l=>l.master_id===masterFilter);
+  if(!filtered.length){
+    el.innerHTML=`<div style="text-align:center;padding:16px;color:var(--text3);font-size:11px;">No log entries${masterFilter?' for this master':''}</div>`;
+    return;
+  }
+  el.innerHTML=filtered.slice(-400).reverse().map(l=>{
+    const ts=new Date(l.timestamp).toISOString().slice(11,23);
+    const mLabel=l.master_id?(mastersData.find(m=>m.master_id===l.master_id)?.label||l.master_id):'';
+    const sLabel=l.account_id?(slavesData.find(s=>s.account_id===l.account_id)?.label||l.account_id):'';
+    const latHtml=l.latency_ms!=null?`<span class="lat-chip ${l.latency_ms<50?'lat-g':l.latency_ms<100?'lat-o':'lat-r'}">${l.latency_ms.toFixed(0)}ms</span>`:'';
+    return `<div class="log-row ${l.level}">
+      <span class="log-ts">${ts}</span>
+      <span class="log-lvl ${l.level}">${l.level}</span>
+      ${mLabel?`<span class="log-master">[${esc(mLabel)}]</span>`:''}
+      ${sLabel?`<span class="log-slave">${esc(sLabel)}</span>`:''}
+      <span class="log-msg">${esc(l.message)}</span>
+      ${latHtml}
+    </div>`;
+  }).join('');
+}
+
+function setLogTab(t){
+  logTab=t;
+  const all=document.getElementById('tab-all'), err=document.getElementById('tab-error');
+  all.style.borderColor=t==='all'?'var(--blue)':'var(--border)';
+  all.style.color=t==='all'?'var(--blue)':'var(--text2)';
+  err.style.borderColor=t==='error'?'var(--red)':'var(--border)';
+  err.style.color=t==='error'?'var(--red)':'var(--text2)';
+  renderLog();
+}
+function clearLocalLog(){ localLogs=[]; renderLog(); }
+
+// ══════════════════════════════════════════════════════════════════════
+// SYMBOL MAP
+// ══════════════════════════════════════════════════════════════════════
+function renderSymMap(){
+  const el=document.getElementById('sym-list');
+  const entries=Object.entries(symMap);
+  if(!entries.length){ el.innerHTML='<span style="font-family:var(--mono);font-size:10px;color:var(--text3)">No mappings yet</span>'; return; }
+  el.innerHTML=entries.map(([k,v])=>`
+    <div style="display:flex;align-items:center;justify-content:space-between;background:var(--bg3);border:1px solid var(--border);border-radius:5px;padding:5px 9px;">
+      <span style="font-family:var(--mono);font-size:11px;color:var(--blue-bright)">${esc(k)} → ${esc(v)}</span>
+      <button onclick="removeSymMap('${k}')" style="background:none;border:none;color:var(--text3);cursor:pointer;font-size:12px;">✕</button>
+    </div>`).join('');
+}
+async function addSymMap(){
+  const from=document.getElementById('sym-from').value.trim().toUpperCase();
+  const to=document.getElementById('sym-to').value.trim().toUpperCase();
+  if(!from||!to) return toast('Fill both symbol fields','error');
+  symMap[from]=to; renderSymMap();
+  try{ await apiFetch('/symbol-map','POST',symMap); toast(`Mapped ${from} → ${to}`,'info'); }
+  catch(e){ toast('Failed: '+e.message,'error'); }
+  document.getElementById('sym-from').value='';
+  document.getElementById('sym-to').value='';
+}
+async function removeSymMap(key){ delete symMap[key]; renderSymMap(); try{ await apiFetch('/symbol-map','POST',symMap); }catch(e){} }
+
+// ══════════════════════════════════════════════════════════════════════
+// ADD ACCOUNT
+// ══════════════════════════════════════════════════════════════════════
+async function addAccount(){
+  const label=document.getElementById('f-label').value.trim();
+  const login=parseInt(document.getElementById('f-login').value);
+  const pass=document.getElementById('f-pass').value;
+  const server=document.getElementById('f-server').value.trim();
+  const path=document.getElementById('f-path').value.trim()||'C:\\Program Files\\MetaTrader 5\\terminal64.exe';
+  if(!label||!login||!pass||!server) return toast('Fill all required fields (*)','error');
+  if(!wsActive&&!BRIDGE) return toast('Connect to bridge first','error');
+  const payload={role:currentRole,label,login,password:pass,server,terminal_path:path};
+  if(currentRole==='master'){
+    const magic=parseInt(document.getElementById('f-magic').value);
+    if(!magic) return toast('Magic number is required for master','error');
+    payload.magic_number=magic;
+  } else {
+    payload.lot_sizing_mode=document.getElementById('f-lot-mode').value;
+    payload.max_lot=parseFloat(document.getElementById('f-maxlot').value)||10.0;
+    payload.multiplier=parseFloat(document.getElementById('f-mult').value)||1.0;
+  }
+  try{
+    await apiFetch('/account','POST',payload);
+    toast(`${currentRole==='master'?'Master':'Slave'} "${label}" added ✓`,'success');
+    ['f-label','f-login','f-pass','f-server','f-path','f-magic','f-maxlot','f-mult'].forEach(id=>{ const e=document.getElementById(id); if(e) e.value=''; });
+    await refreshAll();
+  }catch(e){ toast('Add failed: '+e.message,'error'); }
+}
+
+// ══════════════════════════════════════════════════════════════════════
+// REMOVE
+// ══════════════════════════════════════════════════════════════════════
+function removeMaster(id,label){
+  showConfirm(`Remove master "${label}"? All slave links will be removed.`,async()=>{
+    try{ await apiFetch(`/masters/${id}`,'DELETE'); toast(`Master "${label}" removed`,'info'); await refreshAll(); }
+    catch(e){ toast('Remove failed: '+e.message,'error'); }
+  });
+}
+function removeSlave(id,label){
+  showConfirm(`Remove slave "${label}"?`,async()=>{
+    try{ await apiFetch(`/slaves/${id}`,'DELETE'); toast(`Slave "${label}" removed`,'info'); await refreshAll(); }
+    catch(e){ toast('Remove failed: '+e.message,'error'); }
+  });
+}
+
+// ══════════════════════════════════════════════════════════════════════
+// LINK / UNLINK
+// ══════════════════════════════════════════════════════════════════════
+function openLinkModal(masterId,masterLabel){
+  _linkMasterId=masterId;
+  document.getElementById('link-master-name').textContent=masterLabel;
+  const master=mastersData.find(m=>m.master_id===masterId);
+  const linked=master?master.linked_slaves||[]:[]; 
+  const listEl=document.getElementById('link-slave-list');
+  if(!slavesData.length){
+    listEl.innerHTML='<div style="text-align:center;padding:20px;color:var(--text3);font-family:var(--mono);font-size:11px;">No slave accounts yet. Add slaves from the sidebar.</div>';
+  } else {
+    listEl.innerHTML=slavesData.map(s=>{
+      const already=linked.includes(s.account_id);
+      const conn=s.connection_status==='connected';
+      return `<div class="link-slave-item ${already?'linked':''}" ${already?'':`onclick="linkSlave('${s.account_id}')"`}>
+        <div style="display:flex;align-items:center;gap:10px;">
+          <span class="dot ${conn?'dot-blue':'dot-gray'}"></span>
+          <div>
+            <div style="font-size:13px;font-weight:500;">${esc(s.label)}</div>
+            <div style="font-family:var(--mono);font-size:10px;color:var(--text3);">${esc(s.server)} · $${fmt(s.equity)}</div>
+          </div>
+        </div>
+        ${already?'<span class="tag tag-blue" style="font-size:9px;">Linked</span>':'<span style="font-family:var(--mono);font-size:10px;color:var(--text3);">Click to link</span>'}
+      </div>`;
+    }).join('');
+  }
+  document.getElementById('link-modal').classList.remove('hidden');
+}
+
+async function linkSlave(slaveId){
+  if(!_linkMasterId) return;
+  try{
+    await apiFetch('/link','POST',{master_id:_linkMasterId,account_id:slaveId});
+    const s=slavesData.find(x=>x.account_id===slaveId), m=mastersData.find(x=>x.master_id===_linkMasterId);
+    toast(`"${s?.label}" linked to "${m?.label}" ✓`,'success');
+    closeModal('link-modal');
+    await refreshAll();
+  }catch(e){ toast('Link failed: '+e.message,'error'); }
+}
+
+async function unlinkSlave(masterId,slaveId){
+  const s=slavesData.find(x=>x.account_id===slaveId), m=mastersData.find(x=>x.master_id===masterId);
+  try{
+    await apiFetch('/unlink','POST',{master_id:masterId,account_id:slaveId});
+    toast(`"${s?.label}" unlinked from "${m?.label}"`,'info');
+    await refreshAll();
+  }catch(e){ toast('Unlink failed: '+e.message,'error'); }
+}
+
+// ══════════════════════════════════════════════════════════════════════
+// MODALS
+// ══════════════════════════════════════════════════════════════════════
+function closeModal(id){ document.getElementById(id).classList.add('hidden'); }
+document.querySelectorAll('.modal-backdrop').forEach(el=>{ el.addEventListener('click',e=>{ if(e.target===el) el.classList.add('hidden'); }); });
+function showConfirm(msg,cb){
+  document.getElementById('confirm-msg').textContent=msg;
+  _confirmCb=cb;
+  document.getElementById('confirm-modal').classList.remove('hidden');
+}
+document.getElementById('confirm-ok').addEventListener('click',()=>{ closeModal('confirm-modal'); if(_confirmCb){_confirmCb();_confirmCb=null;} });
+
+// ══════════════════════════════════════════════════════════════════════
+// TOASTS
+// ══════════════════════════════════════════════════════════════════════
+function toast(msg,type='success'){
+  const el=document.createElement('div');
+  const icon=type==='success'?'✓':type==='error'?'✕':'ℹ';
+  el.className=`toast ${type}`;
+  el.innerHTML=`<span>${icon}</span><span>${msg}</span>`;
+  document.getElementById('toasts').appendChild(el);
+  setTimeout(()=>el.remove(),3800);
+}
+
+// ══════════════════════════════════════════════════════════════════════
+// API HELPER
+// ══════════════════════════════════════════════════════════════════════
+async function apiFetch(path,method='GET',body=null){
+  const opts={method,headers:{'Content-Type':'application/json'}};
+  const key=document.getElementById('cfg-apikey')?.value;
+  if(key) opts.headers['X-API-Key']=key;
+  if(body) opts.body=JSON.stringify(body);
+  const r=await fetch(BRIDGE+path,opts);
+  if(!r.ok){ const t=await r.text(); throw new Error(`HTTP ${r.status}: ${t.slice(0,120)}`); }
+  return r.json();
+}
+
+// ══════════════════════════════════════════════════════════════════════
+// UTILS
+// ══════════════════════════════════════════════════════════════════════
+function esc(s){ if(!s) return ''; return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;'); }
+function fmt(n){ return n!=null?Number(n).toLocaleString('en',{minimumFractionDigits:2,maximumFractionDigits:2}):'0.00'; }
+function relTime(iso){ const s=Math.floor((Date.now()-new Date(iso))/1000); if(s<5) return 'just now'; if(s<60) return `${s}s ago`; if(s<3600) return `${Math.floor(s/60)}m ago`; return `${Math.floor(s/3600)}h ago`; }
+
+// ══════════════════════════════════════════════════════════════════════
+// MAIN TAB SWITCHING
+// ══════════════════════════════════════════════════════════════════════
+function switchMainTab(tab) {
+  ['dashboard','settings'].forEach(t => {
+    document.getElementById('maintab-'+t).classList.toggle('active', t===tab);
+    document.getElementById('tabview-'+t).classList.toggle('active', t===tab);
+  });
+  if (tab==='settings') refreshSettingsPage();
+}
+
+// ══════════════════════════════════════════════════════════════════════
+// SETTINGS PAGE
+// ══════════════════════════════════════════════════════════════════════
+function refreshSettingsPage() {
+  document.getElementById('settings-bridge-url').textContent = BRIDGE;
+  const wsOk = wsActive;
+  const wsEl = document.getElementById('settings-ws-status');
+  wsEl.textContent = wsOk ? 'Connected' : 'Disconnected';
+  wsEl.className   = wsOk ? 'tag tag-green' : 'tag tag-red';
+  loadTelegramConfig();
+  // Uptime from last status
+  const up = window._lastUptime || 0;
+  const h=Math.floor(up/3600), m=Math.floor((up%3600)/60), s=Math.floor(up%60);
+  document.getElementById('settings-uptime').textContent =
+    up ? `${String(h).padStart(2,'0')}:${String(m).padStart(2,'0')}:${String(s).padStart(2,'0')}` : '—';
+}
+
+// Store uptime from status updates
+const _origApplyStatus = applyStatus;
+
+// ══════════════════════════════════════════════════════════════════════
+// TELEGRAM CONFIG
+// ══════════════════════════════════════════════════════════════════════
+async function loadTelegramConfig() {
+  try {
+    const cfg = await apiFetch('/telegram/config');
+    document.getElementById('tg-master-toggle').checked = cfg.enabled;
+    updateTgStatusUI(cfg);
+  } catch(e) { /* bridge offline */ }
+}
+
+function updateTgStatusUI(cfg) {
+  const badge = document.getElementById('tg-status-badge');
+  const row   = document.getElementById('tg-status-row');
+  const title = document.getElementById('tg-status-title');
+  const sub   = document.getElementById('tg-status-sub');
+
+  if (!cfg.configured) {
+    badge.textContent = 'Not configured'; badge.className = 'tag tag-gray';
+    row.style.background = 'rgba(74,88,120,.1)';
+    row.style.borderColor = 'var(--border)';
+    title.textContent = 'Not Configured';
+    sub.textContent   = 'Enter your Bot Token and Chat ID below to enable';
+    document.getElementById('tg-status-row').querySelector('.tg-status-icon').textContent = '🔘';
+  } else if (!cfg.enabled) {
+    badge.textContent = 'Paused'; badge.className = 'tag tag-amber';
+    row.style.background = 'rgba(255,173,13,.06)';
+    row.style.borderColor = 'rgba(255,173,13,.25)';
+    title.textContent = 'Paused';
+    sub.textContent = 'Toggle the switch to resume notifications';
+    document.getElementById('tg-status-row').querySelector('.tg-status-icon').textContent = '⏸️';
+  } else {
+    badge.textContent = 'Active'; badge.className = 'tag tag-green';
+    row.style.background = 'rgba(0,214,143,.06)';
+    row.style.borderColor = 'rgba(0,214,143,.2)';
+    title.textContent = 'Notifications Active';
+    sub.textContent   = `Sending to chat ${cfg.token_preview}`;
+    document.getElementById('tg-status-row').querySelector('.tg-status-icon').textContent = '✅';
+  }
+}
+
+async function saveTelegramConfig() {
+  const token  = document.getElementById('tg-token').value.trim();
+  const chatId = document.getElementById('tg-chatid').value.trim();
+  if (!token && !chatId) return toast('Enter bot token and chat ID','error');
+  try {
+    const payload = {};
+    if (token)  payload.bot_token = token;
+    if (chatId) payload.chat_id   = chatId;
+    await apiFetch('/telegram/config','PATCH', payload);
+    toast('Telegram config saved ✓','success');
+    document.getElementById('tg-token').value = '';
+    loadTelegramConfig();
+  } catch(e) { toast('Save failed: '+e.message,'error'); }
+}
+
+async function toggleTelegram(enabled) {
+  try {
+    await apiFetch('/telegram/toggle?enabled='+enabled,'PATCH');
+    toast(`Telegram notifications ${enabled?'enabled':'paused'}`,'info');
+    loadTelegramConfig();
+  } catch(e) {
+    toast('Toggle failed: '+e.message,'error');
+    document.getElementById('tg-master-toggle').checked = !enabled;
+  }
+}
+
+async function testTelegram() {
+  const banner = document.getElementById('tg-test-banner');
+  banner.style.display = 'none';
+  try {
+    await apiFetch('/telegram/test','POST');
+    banner.className = 'test-banner ok';
+    banner.textContent = '✓ Test message sent! Check your Telegram.';
+    banner.style.display = 'block';
+    toast('Test message sent!','success');
+  } catch(e) {
+    banner.className = 'test-banner fail';
+    banner.textContent = '✕ '+e.message;
+    banner.style.display = 'block';
+    toast('Test failed: '+e.message,'error');
+  }
+}
+
+function saveEventPrefs() {
+  // Store in localStorage for persistence (UI-only preference, bridge sends all events)
+  const prefs = {
+    detected:    document.getElementById('evt-detected').checked,
+    copied:      document.getElementById('evt-copied').checked,
+    failed:      document.getElementById('evt-failed').checked,
+    slaveConn:   document.getElementById('evt-slave-conn').checked,
+    masterConn:  document.getElementById('evt-master-conn').checked,
+    bridge:      document.getElementById('evt-bridge').checked,
+  };
+  try { localStorage.setItem('omni_tg_prefs', JSON.stringify(prefs)); } catch(e) {}
+  toast('Preferences saved','info');
+}
+
+function loadEventPrefs() {
+  try {
+    const prefs = JSON.parse(localStorage.getItem('omni_tg_prefs') || '{}');
+    if ('detected'   in prefs) document.getElementById('evt-detected').checked   = prefs.detected;
+    if ('copied'     in prefs) document.getElementById('evt-copied').checked     = prefs.copied;
+    if ('failed'     in prefs) document.getElementById('evt-failed').checked     = prefs.failed;
+    if ('slaveConn'  in prefs) document.getElementById('evt-slave-conn').checked = prefs.slaveConn;
+    if ('masterConn' in prefs) document.getElementById('evt-master-conn').checked= prefs.masterConn;
+    if ('bridge'     in prefs) document.getElementById('evt-bridge').checked     = prefs.bridge;
+  } catch(e) {}
+}
+
+// ══════════════════════════════════════════════════════════════════════
+// TELEGRAM MESSAGE PREVIEW
+// ══════════════════════════════════════════════════════════════════════
+const PREVIEWS = {
+  detected: `<b>📡 OmniRoute — Signal Detected</b>
+<span class="tg-divider">━━━━━━━━━━━━━━━━━━━━</span>
+<b>Master:</b>  Master A
+<b>Magic:</b>   <code>111</code>
+<b>Signal:</b>  <code>a1b2c3d4</code>
+<span class="tg-divider">━━━━━━━━━━━━━━━━━━━━</span>
+<span class="tg-green">🟢 BUY</span>  <b>EURUSD</b>
+<b>Volume:</b>  <code>0.10 lots</code>
+<b>Price:</b>   <code>1.08520</code>
+<b>SL:</b>      <code>1.08000</code>
+<b>TP:</b>      <code>1.09500</code>
+<span class="tg-divider">━━━━━━━━━━━━━━━━━━━━</span>
+<i>2025-01-15 14:32:07 UTC</i>`,
+
+  copied: `<b>✅ OmniRoute — Trade Copied</b>
+<span class="tg-divider">━━━━━━━━━━━━━━━━━━━━</span>
+<b>Slave:</b>   Slave 1 — ICMarkets
+<b>Account:</b> <code>ACC001</code>
+<b>Master:</b>  Master A
+<span class="tg-divider">━━━━━━━━━━━━━━━━━━━━</span>
+<span class="tg-green">🟢 BUY</span>  <b>EURUSD</b>
+<b>Volume:</b>  <code>0.08 lots</code>
+<b>Price:</b>   <code>1.08523</code>
+<b>Ticket:</b>  <code>#100847</code>
+<b>Signal:</b>  <code>a1b2c3d4</code>
+<span class="tg-divider">━━━━━━━━━━━━━━━━━━━━</span>
+⚡ Latency: <code>23.4ms</code>
+<i>2025-01-15 14:32:07 UTC</i>`,
+
+  failed: `<b>❌ OmniRoute — Copy Failed</b>
+<span class="tg-divider">━━━━━━━━━━━━━━━━━━━━</span>
+<b>Slave:</b>   Slave 3 — Pepperstone
+<b>Account:</b> <code>ACC003</code>
+<b>Master:</b>  Master B
+<span class="tg-divider">━━━━━━━━━━━━━━━━━━━━</span>
+<b>Symbol:</b>  XAUUSD
+<b>Action:</b>  BUY
+<b>Signal:</b>  <code>x9y8z7w6</code>
+<span class="tg-divider">━━━━━━━━━━━━━━━━━━━━</span>
+⚠️ <b>Error:</b> <span class="tg-red">Market closed</span> (code <code>10018</code>)
+<i>2025-01-15 14:32:08 UTC</i>`,
+
+  conn: `<b>🔗 OmniRoute — Slave Connected</b>
+<span class="tg-divider">━━━━━━━━━━━━━━━━━━━━</span>
+<b>Slave:</b>   Slave 2 — Exness
+<b>Account:</b> <code>ACC002</code>
+<b>Server:</b>  Exness-MT5Real
+<b>Equity:</b>  <code>$8,450.00</code>
+<span class="tg-divider">━━━━━━━━━━━━━━━━━━━━</span>
+<i>2025-01-15 14:30:01 UTC</i>`,
+};
+
+function showPreview(type) {
+  const el = document.getElementById('tg-preview');
+  el.innerHTML = PREVIEWS[type] || '';
+}
+
+// ══════════════════════════════════════════════════════════════════════
+// PATCH applyStatus TO TRACK UPTIME
+// ══════════════════════════════════════════════════════════════════════
+const _origApply = applyStatus;
+applyStatus = function(s) {
+  _origApply(s);
+  window._lastUptime = s.uptime_seconds || 0;
+  // Update telegram toggle if status includes it
+  if (s.telegram_enabled !== undefined) {
+    const tog = document.getElementById('tg-master-toggle');
+    if (tog) tog.checked = s.telegram_enabled;
+  }
+};
+
+// ══════════════════════════════════════════════════════════════════════
+// BOOT
+// ══════════════════════════════════════════════════════════════════════
+document.getElementById('cfg-url').addEventListener('change',e=>{ BRIDGE=e.target.value.replace(/\/$/,''); });
+// Polling fallback
+setInterval(()=>{
+  if(!wsActive) refreshAll();
+  else apiFetch('/logs?limit=400').then(logs=>{localLogs=logs;renderLog();}).catch(()=>{});
+},3000);
+// Initial render
+renderMasters(); renderSlaves(); renderLog();
+loadEventPrefs();
+showPreview('copied');
+connectBridge();
+</script>
+</body>
+</html>

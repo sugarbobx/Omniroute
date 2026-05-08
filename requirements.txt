@@ -1,0 +1,8 @@
+fastapi==0.115.5
+uvicorn[standard]==0.32.1
+pydantic==2.10.3
+pydantic-settings==2.6.1
+websockets==13.1
+httpx==0.28.1          # Telegram HTTP client
+# Windows VPS only:
+MetaTrader5==5.0.4862
