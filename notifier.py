@@ -27,6 +27,9 @@ import httpx
 
 from config import settings
 
+# Holds strong references to in-flight fire-and-forget tasks so GC can't collect them.
+_background_tasks: set = set()
+
 logger = logging.getLogger("notifier")
 
 # ── Singleton HTTP client (reused across calls) ──────────────────────────────
@@ -80,11 +83,17 @@ def _ts() -> str:
 def _fire(coro):
     """Schedule a coroutine without blocking the caller."""
     try:
-        loop = asyncio.get_event_loop()
-        if loop.is_running():
-            asyncio.create_task(coro)
-        else:
-            loop.run_until_complete(coro)
+        loop = asyncio.get_running_loop()
+        task = loop.create_task(coro)
+        # Keep a strong reference so the GC doesn't collect the task before it finishes.
+        _background_tasks.add(task)
+        task.add_done_callback(_background_tasks.discard)  # auto-remove when done
+    except RuntimeError:
+        # No running loop (e.g. called from a sync context at startup)
+        try:
+            asyncio.run(coro)
+        except Exception as exc:
+            logger.debug(f"Notifier fire error: {exc}")
     except Exception as exc:
         logger.debug(f"Notifier fire error: {exc}")
 

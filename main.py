@@ -66,13 +66,26 @@ async def lifespan(app: FastAPI):
             await asyncio.sleep(2)
             if ws_manager.active:
                 await ws_manager.broadcast({"type": "status", "data": router.get_full_status()})
-    asyncio.create_task(_push())
-    yield
-    await router.shutdown()
+    # Store the task to prevent garbage collection
+    push_task = asyncio.create_task(_push())
+    try:
+        yield
+    finally:
+        push_task.cancel()
+        await router.shutdown()
 
 
 app = FastAPI(title="OmniRoute Bridge", version="2.2.0", lifespan=lifespan)
-app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_credentials=True, allow_methods=["*"], allow_headers=["*"])
+# allow_credentials=True is incompatible with allow_origins=["*"] per the CORS spec.
+# Use explicit origins (from env) or allow all without credentials.
+_cors_origins = [o.strip() for o in (settings.cors_origins or "").split(",") if o.strip()] or ["*"]
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=_cors_origins,
+    allow_credentials=_cors_origins != ["*"],
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 
 @app.middleware("http")
@@ -81,6 +94,19 @@ async def timing(request: Request, call_next):
     resp = await call_next(request)
     resp.headers["X-Latency-Ms"] = f"{(time.perf_counter()-t0)*1000:.2f}"
     return resp
+
+
+@app.middleware("http")
+async def api_auth(request: Request, call_next):
+    secret = settings.api_secret
+    if secret:
+        # Skip auth for health check and docs
+        if request.url.path not in ("/health", "/docs", "/openapi.json", "/redoc"):
+            token = request.headers.get("X-API-Key") or request.query_params.get("api_key")
+            if token != secret:
+                from fastapi.responses import JSONResponse
+                return JSONResponse({"detail": "Unauthorized"}, status_code=401)
+    return await call_next(request)
 
 
 # ── Health ────────────────────────────────────────────────────────────────────

@@ -10,6 +10,9 @@ class Settings(BaseSettings):
     bridge_host:  str   = "0.0.0.0"
     bridge_port:  int   = 8000
     api_secret:   str   = ""
+    # Comma-separated allowed origins, e.g. "http://localhost:3000,https://mypanel.com"
+    # Leave empty to allow all origins (no credentials in that case).
+    cors_origins: str   = ""
 
     # Master reference equity fallback
     master_equity: float = 10_000.0

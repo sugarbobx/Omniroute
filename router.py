@@ -191,12 +191,6 @@ class CopyRouter:
         if signal.master_equity:
             master_state.equity = signal.master_equity
 
-        notifier.notify_trade_detected(
-            master_label=master_state.account.label, magic_number=signal.magic_number,
-            symbol=signal.symbol, trade_type=signal.type.value, volume=signal.volume,
-            price=signal.price, sl=signal.sl, tp=signal.tp, signal_id=signal.signal_id,
-        )
-
         linked_ids = [
             s_id for s_id, ss in self.slaves.items()
             if master_id in ss.account.master_ids
@@ -207,6 +201,12 @@ class CopyRouter:
             self._log_event("WARN", f"No connected slaves for master {master_state.account.label}", master_id=master_id)
             return
 
+        notifier.notify_trade_detected(
+            master_label=master_state.account.label, magic_number=signal.magic_number,
+            symbol=signal.symbol, trade_type=signal.type.value, volume=signal.volume,
+            price=signal.price, sl=signal.sl, tp=signal.tp, signal_id=signal.signal_id,
+        )
+
         tasks = [self._execute_on_slave(signal, master_state, self.slaves[s_id], t0) for s_id in linked_ids]
         await asyncio.gather(*tasks, return_exceptions=True)
         master_state.trades_today += 1
@@ -215,9 +215,12 @@ class CopyRouter:
         master_id = self._magic_index.get(magic_number)
         if not master_id:
             return
+        master_state = self.masters.get(master_id)
+        if not master_state:
+            return
         linked = [s_id for s_id, ss in self.slaves.items()
                   if master_id in ss.account.master_ids and ss.status == ConnectionStatus.CONNECTED]
-        tasks = [self._close_on_slave(magic_number, symbol, self.slaves[s_id]) for s_id in linked]
+        tasks = [self._close_on_slave(magic_number, symbol, master_state, self.slaves[s_id]) for s_id in linked]
         if tasks:
             await asyncio.gather(*tasks, return_exceptions=True)
 
@@ -459,8 +462,8 @@ class CopyRouter:
 
     # ── Close ─────────────────────────────────────────────────────────────────
 
-    async def _close_on_slave(self, magic_number: int, symbol: str, state: SlaveState):
-        slave_symbol = symbol  # simplified; resolver needs master_state
+    async def _close_on_slave(self, magic_number: int, symbol: str, master_state: MasterState, state: SlaveState):
+        slave_symbol = self._resolve_symbol(symbol, master_state, state)
         if not MT5_AVAILABLE:
             tickets = db.get_slave_tickets(state.account.account_id, magic_number, slave_symbol)
             for t in tickets:

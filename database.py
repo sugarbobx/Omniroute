@@ -106,6 +106,9 @@ def init_db():
                 error        TEXT,
                 modified_at  TEXT NOT NULL
             );
+
+            CREATE INDEX IF NOT EXISTS idx_slave_positions_lookup
+                ON slave_positions(account_id, magic_number, symbol);
         """)
     logger.info(f"Database ready: {DB_PATH.resolve()}")
 
@@ -212,6 +215,7 @@ def load_all_slaves() -> list[SlaveAccount]:
 def delete_slave(account_id: str):
     with get_conn() as conn:
         conn.execute("DELETE FROM slaves WHERE account_id=?", (account_id,))
+        conn.execute("DELETE FROM slave_positions WHERE account_id=?", (account_id,))
 
 
 def _row_to_slave(row) -> SlaveAccount:
@@ -230,6 +234,7 @@ def _row_to_slave(row) -> SlaveAccount:
         slippage_override=row["slippage_override"],
         protection=prot,
         enabled=bool(row["enabled"]),
+        created_at=datetime.fromisoformat(row["created_at"]),
     )
 
 
