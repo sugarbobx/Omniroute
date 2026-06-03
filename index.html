@@ -4,6 +4,11 @@
 <meta charset="UTF-8"/>
 <meta name="viewport" content="width=device-width,initial-scale=1.0"/>
 <title>OmniRoute v2.2 — Trade Protection</title>
+<link rel="icon" type="image/svg+xml" href="favicon.svg"/>
+<link rel="alternate icon" href="favicon.svg"/>
+<meta name="theme-color" content="#0070f3"/>
+<meta name="application-name" content="OmniRoute"/>
+<meta name="description" content="Multi-Master MT5 Trade Copier — OmniRoute v2.2"/>
 <link rel="preconnect" href="https://fonts.googleapis.com"/>
 <link href="https://fonts.googleapis.com/css2?family=Geist+Mono:wght@300;400;500;600;700&family=Instrument+Sans:wght@400;500;600;700&display=swap" rel="stylesheet"/>
 <style>
@@ -344,6 +349,37 @@ select.fi option{background:var(--bg2);}
 .prot-chip-lot{background:rgba(0,214,143,.08);color:var(--green);border:1px solid rgba(0,214,143,.15);}
 .prot-chip-sltp{background:rgba(167,139,250,.08);color:#a78bfa;border:1px solid rgba(167,139,250,.2);}
 .prot-chip-off{background:var(--bg3);color:var(--text3);border:1px solid var(--border);}
+
+/* ── COPY BUTTON ─────────────────────────────────────────────────────── */
+.copy-btn{background:none;border:none;cursor:pointer;color:var(--text3);font-size:10px;padding:2px 5px;border-radius:3px;opacity:0;transition:opacity .15s,color .15s,background .15s;}
+.master-card:hover .copy-btn,.slave-row:hover .copy-btn{opacity:1;}
+.copy-btn:hover{color:var(--blue-bright);background:var(--blue-glow2);}
+
+/* ── UNSAVED PROTECTION INDICATOR ───────────────────────────────────── */
+.prot-save-btn.has-changes{background:linear-gradient(135deg,var(--amber),#d97706) !important;box-shadow:0 0 20px rgba(255,173,13,.4) !important;animation:pulseAmber 1.8s infinite;}
+@keyframes pulseAmber{0%,100%{box-shadow:0 0 16px rgba(255,173,13,.3)}50%{box-shadow:0 0 28px rgba(255,173,13,.6)}}
+
+/* ── SIDEBAR TOGGLE (mobile) ─────────────────────────────────────────── */
+#sidebar-toggle{display:none;align-items:center;justify-content:center;width:34px;height:34px;border:1px solid var(--border);border-radius:6px;cursor:pointer;background:var(--bg2);color:var(--text2);font-size:16px;flex-shrink:0;transition:all .15s;user-select:none;}
+#sidebar-toggle:hover{border-color:var(--blue);color:var(--blue);}
+
+/* ── LOG SEARCH ──────────────────────────────────────────────────────── */
+.log-search{width:150px;padding:3px 8px;font-size:10px;height:24px;background:var(--bg);border:1px solid var(--border);border-radius:4px;color:var(--text);font-family:var(--mono);outline:none;}
+.log-search:focus{border-color:var(--blue);}
+.log-search::placeholder{color:var(--text3);}
+
+/* ── RESPONSIVE ──────────────────────────────────────────────────────── */
+@media(max-width:900px){
+  main{grid-template-columns:1fr;}
+  .sidebar{display:none;position:fixed;top:56px;left:0;right:0;bottom:32px;z-index:50;overflow-y:auto;width:100%;max-width:360px;box-shadow:4px 0 24px rgba(0,0,0,.6);}
+  .sidebar.open{display:flex;}
+  #sidebar-toggle{display:flex;}
+  .panel-grid{grid-template-columns:1fr;grid-template-rows:1fr auto auto;}
+  .slaves-panel{border-left:none;border-top:1px solid var(--border);max-height:280px;}
+  .log-panel{grid-column:1;}
+  .stat-bar{grid-template-columns:repeat(3,1fr);}
+  .stat-cell:nth-child(3){border-right:none;}
+}
 </style>
 </head>
 <body>
@@ -356,6 +392,7 @@ select.fi option{background:var(--bg2);}
 <!-- HEADER -->
 <header>
   <div style="display:flex;align-items:center;gap:12px;">
+    <div id="sidebar-toggle" onclick="toggleSidebar()" title="Toggle sidebar">☰</div>
     <div class="logo-mark" style="width:32px;height:32px;font-size:13px;border-radius:8px;background:linear-gradient(135deg,#0070f3,#0040c0);box-shadow:0 0 24px rgba(0,112,243,.5);">OR</div>
     <span class="logo-text">Omni<span>Route</span></span>
     <span class="logo-version">v2.2</span>
@@ -368,6 +405,10 @@ select.fi option{background:var(--bg2);}
     <div class="hstat"><span class="hstat-label">Copied</span><span class="hstat-val" id="h-copied" style="color:var(--green)">—</span></div>
     <div class="hdivider"></div>
     <div class="hstat"><span class="hstat-label">Latency</span><span class="hstat-val" id="h-lat" style="color:var(--amber)">—</span></div>
+    <div class="hdivider"></div>
+    <div class="hstat"><span class="hstat-label">Open</span><span class="hstat-val" id="h-open" style="color:var(--text2)">—</span></div>
+    <div class="hdivider"></div>
+    <div class="hstat"><span class="hstat-label">Uptime</span><span class="hstat-val" id="h-uptime" style="color:var(--text2);font-size:11px;">—</span></div>
     <div class="hdivider"></div>
     <div id="ws-pill">
       <span class="dot dot-gray" id="ws-dot"></span>
@@ -549,6 +590,7 @@ select.fi option{background:var(--bg2);}
               <option value="">All Masters</option>
             </select>
           </div>
+          <input class="log-search" id="log-search" placeholder="Search logs…" oninput="renderLog()"/>
           <button class="btn btn-ghost btn-xs" style="margin-left:auto" onclick="clearLocalLog()">Clear</button>
         </div>
         <div id="log-entries" class="log-entries"></div>
@@ -1061,6 +1103,9 @@ function setRole(r){
 // ══════════════════════════════════════════════════════════════════════
 function connectBridge(){
   BRIDGE = document.getElementById('cfg-url').value.replace(/\/$/,'');
+  try{ localStorage.setItem('omni_bridge_url', BRIDGE); }catch(e){}
+  const key=document.getElementById('cfg-apikey')?.value;
+  if(key) try{ localStorage.setItem('omni_api_key', key); }catch(e){}
   hideBridgeError();
   if(ws){ws.close();ws=null;}
 
@@ -1077,8 +1122,12 @@ function connectBridge(){
     };
     ws.onclose=()=>{
       wsActive=false;
-      setPill('gray','Disconnected');
-      setTimeout(()=>{if(!wsActive) connectBridge();},5000);
+      let secs=5;
+      const cdTimer=setInterval(()=>{
+        setPill('gray',`Reconnecting in ${secs}s…`);
+        secs--;
+        if(secs<0){clearInterval(cdTimer);if(!wsActive)connectBridge();}
+      },1000);
     };
     ws.onerror=()=>{
       wsActive=false;
@@ -1244,12 +1293,15 @@ function updateLogMasterFilter(){
 function renderLog(){
   const el=document.getElementById('log-entries');
   const masterFilter=document.getElementById('log-master-filter').value;
+  const searchQ=(document.getElementById('log-search')?.value||'').toLowerCase().trim();
   let filtered=logTab==='error'?localLogs.filter(l=>l.level==='ERROR'):localLogs;
   if(masterFilter) filtered=filtered.filter(l=>l.master_id===masterFilter);
+  if(searchQ) filtered=filtered.filter(l=>(l.message||'').toLowerCase().includes(searchQ)||(l.symbol||'').toLowerCase().includes(searchQ));
   if(!filtered.length){
-    el.innerHTML=`<div style="text-align:center;padding:16px;color:var(--text3);font-size:11px;">No log entries${masterFilter?' for this master':''}</div>`;
+    el.innerHTML=`<div style="text-align:center;padding:16px;color:var(--text3);font-size:11px;">No log entries${masterFilter?' for this master':''}${searchQ?' matching "'+searchQ+'"':''}</div>`;
     return;
   }
+  const atTop = el.scrollTop < 20;
   el.innerHTML=filtered.slice(-400).reverse().map(l=>{
     const ts=new Date(l.timestamp).toISOString().slice(11,23);
     const mLabel=l.master_id?(mastersData.find(m=>m.master_id===l.master_id)?.label||l.master_id):'';
@@ -1264,6 +1316,7 @@ function renderLog(){
       ${latHtml}
     </div>`;
   }).join('');
+  if(atTop) el.scrollTop = 0;
 }
 
 function setLogTab(t){
@@ -1469,9 +1522,6 @@ function refreshSettingsPage() {
   document.getElementById('settings-uptime').textContent =
     up ? `${String(h).padStart(2,'0')}:${String(m).padStart(2,'0')}:${String(s).padStart(2,'0')}` : '—';
 }
-
-// Store uptime from status updates
-const _origApplyStatus = applyStatus;
 
 // ══════════════════════════════════════════════════════════════════════
 // TELEGRAM CONFIG
@@ -1800,6 +1850,9 @@ function updateProtField(sid, field, value) {
     protState[sid] = Object.assign({}, s?.protection || {});
   }
   protState[sid][field] = value;
+  // Mark save button as having unsaved changes
+  const saveBtn = document.querySelector(`#pc-${sid} .prot-save-btn`);
+  if (saveBtn) { saveBtn.classList.add('has-changes'); saveBtn.textContent = '💾 Save (unsaved changes)'; }
 }
 
 function getProtState(sid) {
@@ -1857,11 +1910,13 @@ function refreshSummary(sid) {
 
 async function saveProtection(sid) {
   const p = getProtState(sid);
+  const saveBtn = document.querySelector(`#pc-${sid} .prot-save-btn`);
   try {
     await apiFetch(`/slaves/${sid}/protection`,'PUT', p);
     const s = slavesData.find(x=>x.account_id===sid);
     if (s) s.protection = p;
     delete protState[sid];
+    if (saveBtn) { saveBtn.classList.remove('has-changes'); saveBtn.textContent = '💾 Save Protection Config'; }
     toast('Protection saved ✓','success');
     refreshSummary(sid);
   } catch(e) { toast('Save failed: '+e.message,'error'); }
@@ -1898,21 +1953,62 @@ async function applyPresetAll(name) {
 const _origApply = applyStatus;
 applyStatus = function(s) {
   _origApply(s);
-  window._lastUptime = s.uptime_seconds || 0;
+
+  // Blocked counter
   const bEl = document.getElementById('s-blocked');
   if (bEl) bEl.textContent = s.trades_blocked_today ?? 0;
+
+  // Telegram toggle sync
   if (s.telegram_enabled !== undefined) {
     const tog = document.getElementById('tg-master-toggle');
     if (tog) tog.checked = s.telegram_enabled;
   }
-  // Re-render protection cards if tab is open (live protection data in slave statuses)
+
+  // Open trades total across all slaves
+  const totalOpen = (s.slaves||[]).reduce((acc,sv)=>acc+(sv.open_trades||0),0);
+  const hOpen = document.getElementById('h-open');
+  if (hOpen) hOpen.textContent = totalOpen;
+
+  // Uptime in header
+  const up = s.uptime_seconds || 0;
+  window._lastUptime = up;
+  const hh=Math.floor(up/3600), mm=Math.floor((up%3600)/60), ss=Math.floor(up%60);
+  const hUptime = document.getElementById('h-uptime');
+  if (hUptime) hUptime.textContent = up
+    ? `${String(hh).padStart(2,'0')}:${String(mm).padStart(2,'0')}:${String(ss).padStart(2,'0')}`
+    : '—';
+
+  // Re-render protection cards if tab is open
   const protTab = document.getElementById('tabview-protection');
   if (protTab && protTab.classList.contains('active')) renderProtectionCards();
 };
 
 // ══════════════════════════════════════════════════════════════════════
+// SIDEBAR TOGGLE (mobile)
+// ══════════════════════════════════════════════════════════════════════
+function toggleSidebar(){
+  const sb=document.querySelector('.sidebar');
+  sb.classList.toggle('open');
+}
+// Close sidebar when clicking outside on mobile
+document.addEventListener('click',e=>{
+  const sb=document.querySelector('.sidebar');
+  const tog=document.getElementById('sidebar-toggle');
+  if(sb.classList.contains('open')&&!sb.contains(e.target)&&!tog.contains(e.target)) sb.classList.remove('open');
+});
+
+// ══════════════════════════════════════════════════════════════════════
 // BOOT
 // ══════════════════════════════════════════════════════════════════════
+
+// Restore persisted Bridge URL + API key
+try {
+  const savedUrl = localStorage.getItem('omni_bridge_url');
+  const savedKey = localStorage.getItem('omni_api_key');
+  if (savedUrl) { document.getElementById('cfg-url').value = savedUrl; BRIDGE = savedUrl.replace(/\/$/,''); }
+  if (savedKey) document.getElementById('cfg-apikey').value = savedKey;
+} catch(e) {}
+
 document.getElementById('cfg-url').addEventListener('change',e=>{ BRIDGE=e.target.value.replace(/\/$/,''); });
 setInterval(()=>{
   if(!wsActive) refreshAll();
