@@ -1070,7 +1070,7 @@ const QUOTES = [
 // ══════════════════════════════════════════════════════════════════════
 // APP STATE
 // ══════════════════════════════════════════════════════════════════════
-let BRIDGE='http://127.0.0.1:8000', ws=null, wsActive=false;
+let BRIDGE='http://127.0.0.1:8000', ws=null, wsActive=false, _cdTimer=null;
 let logTab='all', localLogs=[], symMap={}, currentRole='master';
 let mastersData=[], slavesData=[];
 let _linkMasterId=null, _confirmCb=null;
@@ -1107,6 +1107,7 @@ function connectBridge(){
   const key=document.getElementById('cfg-apikey')?.value;
   if(key) try{ localStorage.setItem('omni_api_key', key); }catch(e){}
   hideBridgeError();
+  if(_cdTimer){clearInterval(_cdTimer);_cdTimer=null;}
   if(ws){ws.close();ws=null;}
 
   const wsUrl = BRIDGE.replace(/^http/,'ws')+'/ws/status';
@@ -1114,6 +1115,7 @@ function connectBridge(){
     ws=new WebSocket(wsUrl);
     ws.onopen=()=>{
       wsActive=true;
+      if(_cdTimer){clearInterval(_cdTimer);_cdTimer=null;}
       setPill('blue','Live · '+BRIDGE.replace('http://',''));
       refreshAll();
     };
@@ -1122,11 +1124,12 @@ function connectBridge(){
     };
     ws.onclose=()=>{
       wsActive=false;
+      if(_cdTimer) clearInterval(_cdTimer);
       let secs=5;
-      const cdTimer=setInterval(()=>{
+      _cdTimer=setInterval(()=>{
         setPill('gray',`Reconnecting in ${secs}s…`);
         secs--;
-        if(secs<0){clearInterval(cdTimer);if(!wsActive)connectBridge();}
+        if(secs<0){clearInterval(_cdTimer);_cdTimer=null;if(!wsActive)connectBridge();}
       },1000);
     };
     ws.onerror=()=>{
@@ -1978,9 +1981,24 @@ applyStatus = function(s) {
     ? `${String(hh).padStart(2,'0')}:${String(mm).padStart(2,'0')}:${String(ss).padStart(2,'0')}`
     : '—';
 
-  // Re-render protection cards if tab is open
+  // Re-render protection cards if tab is open, but never clobber unsaved edits.
   const protTab = document.getElementById('tabview-protection');
-  if (protTab && protTab.classList.contains('active')) renderProtectionCards();
+  if (protTab && protTab.classList.contains('active')) {
+    const dirty = new Set(Object.keys(protState));
+    if (dirty.size === 0) {
+      renderProtectionCards();
+    } else {
+      // Refresh only the clean cards; leave dirty ones untouched
+      slavesData.forEach(sv => {
+        if (!dirty.has(sv.account_id)) {
+          const existing = document.getElementById('pc-' + sv.account_id);
+          if (existing) existing.outerHTML = buildProtCard(sv);
+        }
+      });
+      // If no cards exist yet (first render), do a full render anyway
+      if (!document.querySelector('.prot-card') && slavesData.length) renderProtectionCards();
+    }
+  }
 };
 
 // ══════════════════════════════════════════════════════════════════════
