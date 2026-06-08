@@ -18,7 +18,7 @@
   --blue:#0070f3; --blue-dim:#0050b8; --blue-bright:#3b9eff;
   --blue-glow:rgba(0,112,243,.22); --blue-glow2:rgba(0,112,243,.08);
   --green:#00d68f; --red:#ff3b5c; --amber:#ffad0d;
-  --text:#cdd9ee; --text2:#8899b8; --text3:#4a5878;
+  --text:#cdd9ee; --text2:#8899b8; --text3:#6b7ba3;
   --mono:'Geist Mono',monospace; --sans:'Instrument Sans',sans-serif;
   --r:8px; --r2:12px;
 }
@@ -96,7 +96,13 @@ main{flex:1;display:grid;grid-template-columns:300px 1fr;gap:0;max-width:1600px;
 
 /* ── FORM ────────────────────────────────────────────────────────────── */
 .fg{margin-bottom:9px;}
-.fl{font-family:var(--mono);font-size:10px;color:var(--text3);text-transform:uppercase;letter-spacing:.5px;display:flex;align-items:center;gap:6px;margin-bottom:3px;}
+.fl{font-family:var(--mono);font-size:10px;color:var(--text3);text-transform:uppercase;letter-spacing:.5px;display:flex;align-items:center;gap:6px;margin-bottom:3px;cursor:default;}
+/* password show/hide wrapper */
+.pw-wrap{position:relative;display:flex;}
+.pw-wrap .fi{padding-right:34px;flex:1;}
+.pw-toggle{position:absolute;right:0;top:0;bottom:0;width:32px;border:none;background:none;color:var(--text3);cursor:pointer;display:flex;align-items:center;justify-content:center;font-size:13px;transition:color .15s;}
+.pw-toggle:hover{color:var(--text2);}
+.pw-toggle:focus-visible{outline:2px solid var(--blue);outline-offset:-2px;border-radius:4px;}
 .fi{width:100%;background:var(--bg);border:1px solid var(--border);border-radius:6px;color:var(--text);font-family:var(--mono);font-size:12px;padding:7px 10px;outline:none;transition:border-color .15s,box-shadow .15s;}
 .fi:focus{border-color:var(--blue);box-shadow:0 0 0 2px rgba(0,112,243,.15);}
 .fi::placeholder{color:var(--text3);}
@@ -427,7 +433,7 @@ select.fi option{background:var(--bg2);}
 <!-- HEADER -->
 <header>
   <div style="display:flex;align-items:center;gap:12px;">
-    <div id="sidebar-toggle" onclick="toggleSidebar()" title="Toggle sidebar" aria-label="Toggle sidebar" role="button" tabindex="0">☰</div>
+    <div id="sidebar-toggle" onclick="toggleSidebar()" onkeydown="if(event.key==='Enter'||event.key===' '){event.preventDefault();toggleSidebar()}" title="Toggle sidebar" aria-label="Toggle sidebar" role="button" tabindex="0">☰</div>
     <div class="logo-mark" style="width:32px;height:32px;font-size:13px;border-radius:8px;background:linear-gradient(135deg,#0070f3,#0040c0);box-shadow:0 0 24px rgba(0,112,243,.5);">OR</div>
     <span class="logo-text">Omni<span>Route</span></span>
     <span class="logo-version">v2.2</span>
@@ -491,20 +497,23 @@ select.fi option{background:var(--bg2);}
     </div>
     <div class="sb-body" id="cfg-body">
       <div class="fg">
-        <div class="fl">
+        <label class="fl" for="cfg-url">
           Bridge URL
           <div class="tip"><div class="tip-icon">?</div><div class="tip-box">The address of your running Python bridge. Use http://127.0.0.1:8000 if running locally, or http://YOUR_VPS_IP:8000 for a remote server.</div></div>
-        </div>
+        </label>
         <input class="fi" id="cfg-url" value="http://127.0.0.1:8000" placeholder="http://127.0.0.1:8000"/>
       </div>
       <div class="fg">
-        <div class="fl">
+        <label class="fl" for="cfg-apikey">
           API Key
           <div class="tip"><div class="tip-icon">?</div><div class="tip-box">Optional security key. Set API_SECRET in your .env file on the server. Paste the same value here to authenticate all dashboard requests.</div></div>
+        </label>
+        <div class="pw-wrap">
+          <input class="fi" id="cfg-apikey" type="password" placeholder="Leave blank if not configured"/>
+          <button class="pw-toggle" type="button" onclick="togglePw('cfg-apikey',this)" aria-label="Show/hide API key">👁</button>
         </div>
-        <input class="fi" id="cfg-apikey" type="password" placeholder="Leave blank if not configured"/>
       </div>
-      <button class="btn btn-primary btn-full btn-sm" onclick="connectBridge()">⚡ Connect to Bridge</button>
+      <button class="btn btn-primary btn-full btn-sm" id="connect-btn" onclick="connectBridge()">⚡ Connect to Bridge</button>
       <div id="bridge-error" style="display:none;margin-top:8px;padding:8px;background:rgba(255,59,92,.08);border:1px solid rgba(255,59,92,.2);border-radius:6px;font-family:var(--mono);font-size:10px;color:var(--red);line-height:1.5;"></div>
     </div>
   </div>
@@ -520,24 +529,29 @@ select.fi option{background:var(--bg2);}
         <button class="role-btn active" id="role-master" onclick="setRole('master')">⬆ Master</button>
         <button class="role-btn" id="role-slave" onclick="setRole('slave')">⬇ Slave</button>
       </div>
-      <div class="fg"><label class="fl">Label *</label><input class="fi" id="f-label" placeholder="e.g. Master A"/></div>
+      <div class="fg"><label class="fl" for="f-label">Label *</label><input class="fi" id="f-label" placeholder="e.g. Master A"/></div>
       <div class="frow">
-        <div class="fg"><label class="fl">Login *</label><input class="fi" id="f-login" type="number" placeholder="12345678"/></div>
-        <div class="fg"><label class="fl">Password *</label><input class="fi" id="f-pass" type="password" placeholder="••••••"/></div>
+        <div class="fg"><label class="fl" for="f-login">Login *</label><input class="fi" id="f-login" type="number" placeholder="12345678"/></div>
+        <div class="fg"><label class="fl" for="f-pass">Password *</label>
+          <div class="pw-wrap">
+            <input class="fi" id="f-pass" type="password" placeholder="••••••"/>
+            <button class="pw-toggle" type="button" onclick="togglePw('f-pass',this)" aria-label="Show/hide password">👁</button>
+          </div>
+        </div>
       </div>
-      <div class="fg"><label class="fl">Broker Server *</label><input class="fi" id="f-server" placeholder="BrokerName-Live01"/></div>
+      <div class="fg"><label class="fl" for="f-server">Broker Server *</label><input class="fi" id="f-server" placeholder="BrokerName-Live01"/></div>
       <div class="fg">
-        <div class="fl">Terminal Path <div class="tip"><div class="tip-icon">?</div><div class="tip-box">Full path to terminal64.exe on your Windows VPS. Default works for standard MT5 installs.</div></div></div>
+        <label class="fl" for="f-path">Terminal Path <div class="tip"><div class="tip-icon">?</div><div class="tip-box">Full path to terminal64.exe on your Windows VPS. Default works for standard MT5 installs.</div></div></label>
         <input class="fi" id="f-path" placeholder="C:\Program Files\MT5\terminal64.exe"/>
       </div>
       <div id="master-fields">
         <div class="fg">
-          <div class="fl">Magic Number * <div class="tip"><div class="tip-icon">?</div><div class="tip-box">Set this same number in your Master EA's Magic Number input. When the EA fires a signal with this number, the bridge routes it to linked slaves.</div></div></div>
+          <label class="fl" for="f-magic">Magic Number * <div class="tip"><div class="tip-icon">?</div><div class="tip-box">Set this same number in your Master EA's Magic Number input. When the EA fires a signal with this number, the bridge routes it to linked slaves.</div></div></label>
           <input class="fi" id="f-magic" type="number" placeholder="e.g. 111"/>
         </div>
       </div>
       <div id="slave-fields" style="display:none">
-        <div class="fg"><label class="fl">Lot Sizing</label>
+        <div class="fg"><label class="fl" for="f-lot-mode">Lot Sizing</label>
           <select class="fi" id="f-lot-mode">
             <option value="equity_ratio">Equity Ratio (recommended)</option>
             <option value="fixed">Fixed Lot</option>
@@ -545,11 +559,11 @@ select.fi option{background:var(--bg2);}
           </select>
         </div>
         <div class="frow">
-          <div class="fg"><label class="fl">Max Lot</label><input class="fi" id="f-maxlot" type="number" step="0.01" placeholder="10.0"/></div>
-          <div class="fg"><label class="fl">Multiplier</label><input class="fi" id="f-mult" type="number" step="0.1" placeholder="1.0"/></div>
+          <div class="fg"><label class="fl" for="f-maxlot">Max Lot</label><input class="fi" id="f-maxlot" type="number" step="0.01" placeholder="10.0"/></div>
+          <div class="fg"><label class="fl" for="f-mult">Multiplier</label><input class="fi" id="f-mult" type="number" step="0.1" placeholder="1.0"/></div>
         </div>
       </div>
-      <button class="btn btn-primary btn-full" onclick="addAccount()">Add Account</button>
+      <button class="btn btn-primary btn-full" id="add-account-btn" onclick="addAccount()">Add Account</button>
     </div>
   </div>
 
@@ -594,10 +608,10 @@ select.fi option{background:var(--bg2);}
 
   <!-- Main nav tabs -->
   <div class="main-tabs">
-    <div class="main-tab active" id="maintab-dashboard" onclick="switchMainTab('dashboard')">⬛ Dashboard</div>
-    <div class="main-tab" id="maintab-protection" onclick="switchMainTab('protection')">🛡 Protection</div>
-    <div class="main-tab" id="maintab-analytics" onclick="switchMainTab('analytics')">📊 Analytics</div>
-    <div class="main-tab" id="maintab-settings" onclick="switchMainTab('settings')">⚙ Settings</div>
+    <div class="main-tab active" id="maintab-dashboard" onclick="switchMainTab('dashboard')" tabindex="0" onkeydown="if(event.key==='Enter'||event.key===' '){event.preventDefault();switchMainTab('dashboard')}"><svg width="12" height="12" viewBox="0 0 16 16" style="vertical-align:-1px;flex-shrink:0"><rect x="1" y="1" width="6" height="6" rx="1" fill="currentColor"/><rect x="9" y="1" width="6" height="6" rx="1" fill="currentColor"/><rect x="1" y="9" width="6" height="6" rx="1" fill="currentColor"/><rect x="9" y="9" width="6" height="6" rx="1" fill="currentColor"/></svg> Dashboard</div>
+    <div class="main-tab" id="maintab-protection" onclick="switchMainTab('protection')" tabindex="0" onkeydown="if(event.key==='Enter'||event.key===' '){event.preventDefault();switchMainTab('protection')}"><svg width="12" height="13" viewBox="0 0 16 17" style="vertical-align:-1px;flex-shrink:0" fill="none"><path d="M8 1L2 3.5v4C2 11.5 5 14.5 8 15.5c3-1 6-4 6-8V3.5L8 1z" stroke="currentColor" stroke-width="1.5"/></svg> Protection</div>
+    <div class="main-tab" id="maintab-analytics" onclick="switchMainTab('analytics')" tabindex="0" onkeydown="if(event.key==='Enter'||event.key===' '){event.preventDefault();switchMainTab('analytics')}"><svg width="12" height="12" viewBox="0 0 16 16" style="vertical-align:-1px;flex-shrink:0"><rect x="1" y="9" width="3" height="6" rx="0.5" fill="currentColor"/><rect x="6" y="5" width="3" height="10" rx="0.5" fill="currentColor"/><rect x="11" y="1" width="3" height="14" rx="0.5" fill="currentColor"/></svg> Analytics</div>
+    <div class="main-tab" id="maintab-settings" onclick="switchMainTab('settings')" tabindex="0" onkeydown="if(event.key==='Enter'||event.key===' '){event.preventDefault();switchMainTab('settings')}"><svg width="12" height="12" viewBox="0 0 16 16" style="vertical-align:-1px;flex-shrink:0" fill="none"><circle cx="8" cy="8" r="2.5" stroke="currentColor" stroke-width="1.5"/><path d="M8 1v2M8 13v2M1 8h2M13 8h2M3.4 3.4l1.4 1.4M11.2 11.2l1.4 1.4M3.4 12.6l1.4-1.4M11.2 4.8l1.4-1.4" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg> Settings</div>
   </div>
 
   <!-- Dashboard tab -->
@@ -807,22 +821,25 @@ select.fi option{background:var(--bg2);}
 
           <!-- Credentials -->
           <div class="fg">
-            <div class="fl">
+            <label class="fl" for="tg-token">
               Bot Token
               <div class="tip"><div class="tip-icon">?</div><div class="tip-box">Get from @BotFather on Telegram. Send /newbot and copy the token it gives you.</div></div>
+            </label>
+            <div class="pw-wrap">
+              <input class="fi" id="tg-token" type="password" placeholder="7123456789:AAFxxxxxxxxxxxxxxxxxxxxxxxxxxxx"/>
+              <button class="pw-toggle" type="button" onclick="togglePw('tg-token',this)" aria-label="Show/hide token">👁</button>
             </div>
-            <input class="fi" id="tg-token" type="password" placeholder="7123456789:AAFxxxxxxxxxxxxxxxxxxxxxxxxxxxx"/>
           </div>
           <div class="fg">
-            <div class="fl">
+            <label class="fl" for="tg-chatid">
               Chat ID
               <div class="tip"><div class="tip-icon">?</div><div class="tip-box">Your personal ID or group ID. For groups it starts with -100. Use @userinfobot to find yours, or check the .env.example for instructions.</div></div>
-            </div>
+            </label>
             <input class="fi" id="tg-chatid" placeholder="-1001234567890 or 123456789"/>
           </div>
           <div style="display:flex;gap:8px;margin-top:4px;">
-            <button class="btn btn-primary btn-sm" onclick="saveTelegramConfig()">Save Config</button>
-            <button class="btn btn-ghost btn-sm" onclick="testTelegram()">Send Test Message</button>
+            <button class="btn btn-primary btn-sm" id="tg-save-btn" onclick="saveTelegramConfig()">Save Config</button>
+            <button class="btn btn-ghost btn-sm" id="tg-test-btn" onclick="testTelegram()">Send Test Message</button>
           </div>
           <div class="test-banner" id="tg-test-banner"></div>
 
@@ -1132,6 +1149,7 @@ function mkPatterns(){ patterns = Array.from({length:7}, ()=>new ChartPattern())
 
 mkStars(); mkConstellations(); mkPatterns();
 
+let _bgRafId = null;
 function animate(){
   ctx.clearRect(0,0,W,H);
   // Deep radial vignette
@@ -1143,9 +1161,10 @@ function animate(){
   drawStars();
   constellations.forEach(c=>c.draw());
   patterns.forEach(p=>p.draw());
-  requestAnimationFrame(animate);
+  _bgRafId = requestAnimationFrame(animate);
 }
 animate();
+window.addEventListener('pagehide', ()=>{ if(_bgRafId) cancelAnimationFrame(_bgRafId); });
 })();
 
 // ══════════════════════════════════════════════════════════════════════
@@ -1348,6 +1367,7 @@ function renderMasters(){
         </div>
         <div style="display:flex;align-items:center;gap:7px;flex-shrink:0;">
           <span class="mc-magic">magic:${m.magic_number}</span>
+          <button class="copy-btn" onclick="copyToClipboard('${m.magic_number}','Magic number')" title="Copy magic number">⎘</button>
           <button class="btn btn-danger btn-xs" onclick="removeMaster('${m.master_id}','${esc(m.label)}')">Remove</button>
         </div>
       </div>
@@ -1522,12 +1542,13 @@ async function addAccount(){
     payload.max_lot=parseFloat(document.getElementById('f-maxlot').value)||10.0;
     payload.multiplier=parseFloat(document.getElementById('f-mult').value)||1.0;
   }
-  try{
+  const btn = document.getElementById('add-account-btn');
+  await withBtn(btn, 'Adding…', async () => {
     await apiFetch('/account','POST',payload);
     toast(`${currentRole==='master'?'Master':'Slave'} "${label}" added ✓`,'success');
     ['f-label','f-login','f-pass','f-server','f-path','f-magic','f-maxlot','f-mult'].forEach(id=>{ const e=document.getElementById(id); if(e) e.value=''; });
     await refreshAll();
-  }catch(e){ toast('Add failed: '+e.message,'error'); }
+  });
 }
 
 // ══════════════════════════════════════════════════════════════════════
@@ -1640,6 +1661,33 @@ function esc(s){ if(!s) return ''; return String(s).replace(/&/g,'&amp;').replac
 function fmt(n){ return n!=null?Number(n).toLocaleString('en',{minimumFractionDigits:2,maximumFractionDigits:2}):'0.00'; }
 function relTime(iso){ const s=Math.floor((Date.now()-new Date(iso))/1000); if(s<5) return 'just now'; if(s<60) return `${s}s ago`; if(s<3600) return `${Math.floor(s/60)}m ago`; return `${Math.floor(s/3600)}h ago`; }
 
+async function withBtn(btn, loadingText, fn) {
+  if (!btn || btn.disabled) return;
+  const orig = btn.textContent;
+  btn.disabled = true; btn.textContent = loadingText;
+  try { await fn(); } finally { btn.disabled = false; btn.textContent = orig; }
+}
+
+function togglePw(inputId, btn) {
+  const inp = document.getElementById(inputId);
+  if (!inp) return;
+  const show = inp.type === 'password';
+  inp.type = show ? 'text' : 'password';
+  btn.textContent = show ? '🙈' : '👁';
+}
+
+function copyToClipboard(text, label) {
+  navigator.clipboard.writeText(text).then(()=>toast(`${label||'Value'} copied`,'success')).catch(()=>{
+    const ta=document.createElement('textarea'); ta.value=text; document.body.appendChild(ta); ta.select(); document.execCommand('copy'); document.body.removeChild(ta); toast(`${label||'Value'} copied`,'success');
+  });
+}
+
+const _sliderDebounce = {};
+function debouncedRefreshSummary(sid) {
+  clearTimeout(_sliderDebounce[sid]);
+  _sliderDebounce[sid] = setTimeout(() => refreshSummary(sid), 120);
+}
+
 function sparkline(key,w,h){
   const pts=equityHistory[key]||[];
   if(pts.length<2) return '<span style="color:var(--text3);font-size:10px;opacity:.5;margin-left:6px">—</span>';
@@ -1729,7 +1777,8 @@ async function saveTelegramConfig() {
   const token  = document.getElementById('tg-token').value.trim();
   const chatId = document.getElementById('tg-chatid').value.trim();
   if (!token && !chatId) return toast('Enter bot token and chat ID','error');
-  try {
+  const btn = document.getElementById('tg-save-btn');
+  await withBtn(btn, 'Saving…', async () => {
     const payload = {};
     if (token)  payload.bot_token = token;
     if (chatId) payload.chat_id   = chatId;
@@ -1737,7 +1786,7 @@ async function saveTelegramConfig() {
     toast('Telegram config saved ✓','success');
     document.getElementById('tg-token').value = '';
     loadTelegramConfig();
-  } catch(e) { toast('Save failed: '+e.message,'error'); }
+  });
 }
 
 async function toggleTelegram(enabled) {
@@ -1753,7 +1802,9 @@ async function toggleTelegram(enabled) {
 
 async function testTelegram() {
   const banner = document.getElementById('tg-test-banner');
+  const btn = document.getElementById('tg-test-btn');
   banner.style.display = 'none';
+  if (btn) { btn.disabled = true; btn.textContent = 'Sending…'; }
   try {
     await apiFetch('/telegram/test','POST');
     banner.className = 'test-banner ok';
@@ -1765,6 +1816,8 @@ async function testTelegram() {
     banner.textContent = '✕ '+e.message;
     banner.style.display = 'block';
     toast('Test failed: '+e.message,'error');
+  } finally {
+    if (btn) { btn.disabled = false; btn.textContent = 'Send Test Message'; }
   }
 }
 
@@ -1929,7 +1982,7 @@ function buildProtCard(slave) {
         <div class="slider-row">
           <span class="slider-lbl">Max deviation</span>
           <input type="range" class="slider-input" id="slip-max-${sid}" min="0.5" max="50" step="0.5" value="${slipMax}"
-            oninput="document.getElementById('sv-slip-${sid}').textContent=parseFloat(this.value);updateProtField('${sid}','slippage_max',parseFloat(this.value));refreshSummary('${sid}')"/>
+            oninput="document.getElementById('sv-slip-${sid}').textContent=parseFloat(this.value);updateProtField('${sid}','slippage_max',parseFloat(this.value));debouncedRefreshSummary('${sid}')"/>
           <span class="slider-val" id="sv-slip-${sid}">${slipMax}</span>
         </div>
         <div style="font-family:var(--mono);font-size:9px;color:var(--text3);margin-bottom:5px;">Unit:</div>
@@ -1951,7 +2004,7 @@ function buildProtCard(slave) {
         <div class="slider-row">
           <span class="slider-lbl">Risk multiplier</span>
           <input type="range" class="slider-input" id="risk-mult-${sid}" min="0.1" max="5" step="0.1" value="${riskMult}"
-            oninput="document.getElementById('sv-mult-${sid}').textContent=parseFloat(this.value)+'×';updateProtField('${sid}','risk_multiplier',parseFloat(this.value));refreshSummary('${sid}');updateLotLabel('${sid}',parseFloat(this.value))"/>
+            oninput="document.getElementById('sv-mult-${sid}').textContent=parseFloat(this.value)+'×';updateProtField('${sid}','risk_multiplier',parseFloat(this.value));debouncedRefreshSummary('${sid}');updateLotLabel('${sid}',parseFloat(this.value))"/>
           <span class="slider-val" id="sv-mult-${sid}">${riskMult}×</span>
         </div>
         <div style="font-family:var(--mono);font-size:9px;color:var(--text3);margin:3px 0 6px;">Final lot = base × <span style="color:var(--blue-bright)">${riskMult}</span> → clamped [${riskMin}, ${riskMax}]</div>
@@ -2072,7 +2125,7 @@ function refreshSummary(sid) {
 async function saveProtection(sid) {
   const p = getProtState(sid);
   const saveBtn = document.querySelector(`#pc-${sid} .prot-save-btn`);
-  try {
+  await withBtn(saveBtn, '💾 Saving…', async () => {
     await apiFetch(`/slaves/${sid}/protection`,'PUT', p);
     const s = slavesData.find(x=>x.account_id===sid);
     if (s) s.protection = p;
@@ -2080,7 +2133,7 @@ async function saveProtection(sid) {
     if (saveBtn) { saveBtn.classList.remove('has-changes'); saveBtn.textContent = '💾 Save Protection Config'; }
     toast('Protection saved ✓','success');
     refreshSummary(sid);
-  } catch(e) { toast('Save failed: '+e.message,'error'); }
+  });
 }
 
 async function applyPreset(sid, name) {
