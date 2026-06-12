@@ -8,3 +8,4 @@ logs_tmp.json
 # user-created strategy files are runtime data, not source
 strategies/*
 !strategies/__init__.py
+package-lock.json

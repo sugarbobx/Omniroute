@@ -1,0 +1,27 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="32" height="32" viewBox="0 0 32 32">
+  <title>OmniRoute</title>
+  <defs>
+    <linearGradient id="hg" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#0070f3"/>
+      <stop offset="100%" stop-color="#0040c0"/>
+    </linearGradient>
+  </defs>
+
+  <!-- Dark rounded square -->
+  <rect width="32" height="32" rx="7" fill="#05070a"/>
+
+  <!-- Connection lines to slave nodes -->
+  <line x1="18" y1="13" x2="26" y2="7"  stroke="#0070f3" stroke-width="1.2" opacity="0.75"/>
+  <line x1="19" y1="16" x2="27" y2="16" stroke="#0070f3" stroke-width="1.2" opacity="0.75"/>
+  <line x1="18" y1="19" x2="26" y2="25" stroke="#0070f3" stroke-width="1.2" opacity="0.75"/>
+
+  <!-- Slave nodes -->
+  <rect x="24" y="4"  width="6" height="6" rx="1.5" fill="#0070f3" opacity="0.7"/>
+  <rect x="25" y="13" width="6" height="6" rx="1.5" fill="#0070f3" opacity="0.7"/>
+  <rect x="24" y="22" width="6" height="6" rx="1.5" fill="#0070f3" opacity="0.7"/>
+
+  <!-- Main hexagon master node -->
+  <polygon points="16,6 22,10 22,22 16,26 10,22 10,10" fill="url(#hg)"/>
+  <line x1="12" y1="16" x2="20" y2="16" stroke="#ffffff" stroke-width="2" stroke-linecap="round"/>
+  <line x1="16" y1="12" x2="16" y2="20" stroke="#ffffff" stroke-width="2" stroke-linecap="round"/>
+</svg>
