@@ -365,6 +365,39 @@ select.fi option{background:var(--bg2);}
 .master-card:hover .copy-btn,.slave-row:hover .copy-btn{opacity:1;}
 .copy-btn:hover{color:var(--blue-bright);background:var(--blue-glow2);}
 
+/* ── Bot Engine tab ── */
+.bots-page{flex:1;display:grid;grid-template-columns:1fr 1fr;gap:16px;padding:16px 20px;overflow:auto;align-content:start;}
+.bots-col{display:flex;flex-direction:column;gap:10px;min-width:0;}
+.bot-card,.strat-card{background:var(--bg2);border:1px solid var(--border);border-radius:var(--r2);padding:13px 14px;display:flex;flex-direction:column;gap:8px;transition:border-color .15s;}
+.bot-card:hover,.strat-card:hover{border-color:var(--border2);}
+.bot-card.running{border-left:2px solid var(--green);}
+.bot-card.killed{border-left:2px solid var(--red);}
+.bc-head{display:flex;align-items:center;gap:8px;flex-wrap:wrap;}
+.bc-label{font-family:var(--sans);font-size:13px;font-weight:600;color:var(--text);}
+.bc-meta{font-family:var(--mono);font-size:10px;color:var(--text2);display:flex;gap:10px;flex-wrap:wrap;}
+.bc-actions{display:flex;gap:6px;flex-wrap:wrap;margin-top:2px;}
+.bc-strat{font-family:var(--mono);font-size:10px;color:var(--text3);}
+.bc-strat b{color:var(--blue-bright);font-weight:500;}
+.tag-amber{background:rgba(255,173,13,.12);color:var(--amber);border:1px solid rgba(255,173,13,.3);}
+.tag-purple{background:rgba(167,139,250,.12);color:#a78bfa;border:1px solid rgba(167,139,250,.3);}
+.strat-modal-tabs{display:flex;gap:2px;border-bottom:1px solid var(--border);margin-bottom:12px;}
+.strat-modal-tab{padding:8px 14px;font-family:var(--mono);font-size:10px;text-transform:uppercase;letter-spacing:.5px;color:var(--text3);cursor:pointer;border-bottom:2px solid transparent;}
+.strat-modal-tab.active{color:var(--blue-bright);border-bottom-color:var(--blue);}
+.strat-modal-tab:focus-visible{outline:2px solid var(--blue);outline-offset:-2px;}
+.sm-section{border:1px solid var(--border);border-radius:var(--r);padding:10px 12px;margin-bottom:10px;}
+.sm-section-title{font-family:var(--mono);font-size:9px;text-transform:uppercase;letter-spacing:1px;color:var(--text3);margin-bottom:8px;}
+.sm-code{width:100%;min-height:220px;background:var(--bg1);border:1px solid var(--border);border-radius:var(--r);color:var(--text);font-family:var(--mono);font-size:11px;padding:10px;resize:vertical;line-height:1.5;}
+.sm-code:focus{outline:none;border-color:var(--blue);}
+.sm-badge{font-family:var(--mono);font-size:10px;padding:4px 8px;border-radius:4px;display:none;}
+.sm-badge.ok{display:inline-block;background:rgba(0,214,143,.12);color:var(--green);}
+.sm-badge.fail{display:inline-block;background:rgba(255,59,92,.12);color:var(--red);}
+.chk-row{display:flex;gap:10px;flex-wrap:wrap;font-family:var(--mono);font-size:10px;color:var(--text2);}
+.chk-row label{display:flex;align-items:center;gap:4px;cursor:pointer;}
+.results-table{width:100%;border-collapse:collapse;font-family:var(--mono);font-size:10px;}
+.results-table th{text-align:left;color:var(--text3);font-weight:500;text-transform:uppercase;font-size:9px;letter-spacing:.5px;padding:6px 8px;border-bottom:1px solid var(--border);}
+.results-table td{padding:6px 8px;border-bottom:1px solid var(--border);color:var(--text2);}
+@media(max-width:900px){.bots-page{grid-template-columns:1fr;}}
+
 /* ── UNSAVED PROTECTION INDICATOR ───────────────────────────────────── */
 .prot-save-btn.has-changes{background:linear-gradient(135deg,var(--amber),#d97706) !important;box-shadow:0 0 20px rgba(255,173,13,.4) !important;animation:pulseAmber 1.8s infinite;}
 @keyframes pulseAmber{0%,100%{box-shadow:0 0 16px rgba(255,173,13,.3)}50%{box-shadow:0 0 28px rgba(255,173,13,.6)}}
@@ -611,6 +644,7 @@ select.fi option{background:var(--bg2);}
     <div class="main-tab active" id="maintab-dashboard" onclick="switchMainTab('dashboard')" tabindex="0" onkeydown="if(event.key==='Enter'||event.key===' '){event.preventDefault();switchMainTab('dashboard')}"><svg width="12" height="12" viewBox="0 0 16 16" style="vertical-align:-1px;flex-shrink:0"><rect x="1" y="1" width="6" height="6" rx="1" fill="currentColor"/><rect x="9" y="1" width="6" height="6" rx="1" fill="currentColor"/><rect x="1" y="9" width="6" height="6" rx="1" fill="currentColor"/><rect x="9" y="9" width="6" height="6" rx="1" fill="currentColor"/></svg> Dashboard</div>
     <div class="main-tab" id="maintab-protection" onclick="switchMainTab('protection')" tabindex="0" onkeydown="if(event.key==='Enter'||event.key===' '){event.preventDefault();switchMainTab('protection')}"><svg width="12" height="13" viewBox="0 0 16 17" style="vertical-align:-1px;flex-shrink:0" fill="none"><path d="M8 1L2 3.5v4C2 11.5 5 14.5 8 15.5c3-1 6-4 6-8V3.5L8 1z" stroke="currentColor" stroke-width="1.5"/></svg> Protection</div>
     <div class="main-tab" id="maintab-analytics" onclick="switchMainTab('analytics')" tabindex="0" onkeydown="if(event.key==='Enter'||event.key===' '){event.preventDefault();switchMainTab('analytics')}"><svg width="12" height="12" viewBox="0 0 16 16" style="vertical-align:-1px;flex-shrink:0"><rect x="1" y="9" width="3" height="6" rx="0.5" fill="currentColor"/><rect x="6" y="5" width="3" height="10" rx="0.5" fill="currentColor"/><rect x="11" y="1" width="3" height="14" rx="0.5" fill="currentColor"/></svg> Analytics</div>
+    <div class="main-tab" id="maintab-bots" onclick="switchMainTab('bots')" tabindex="0" onkeydown="if(event.key==='Enter'||event.key===' '){event.preventDefault();switchMainTab('bots')}"><svg width="12" height="12" viewBox="0 0 16 16" style="vertical-align:-1px;flex-shrink:0" fill="none"><rect x="2" y="5" width="12" height="9" rx="2" stroke="currentColor" stroke-width="1.5"/><circle cx="5.5" cy="9.5" r="1" fill="currentColor"/><circle cx="10.5" cy="9.5" r="1" fill="currentColor"/><path d="M8 5V2M6 2h4" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg> Bots</div>
     <div class="main-tab" id="maintab-settings" onclick="switchMainTab('settings')" tabindex="0" onkeydown="if(event.key==='Enter'||event.key===' '){event.preventDefault();switchMainTab('settings')}"><svg width="12" height="12" viewBox="0 0 16 16" style="vertical-align:-1px;flex-shrink:0" fill="none"><circle cx="8" cy="8" r="2.5" stroke="currentColor" stroke-width="1.5"/><path d="M8 1v2M8 13v2M1 8h2M13 8h2M3.4 3.4l1.4 1.4M11.2 11.2l1.4 1.4M3.4 12.6l1.4-1.4M11.2 4.8l1.4-1.4" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg> Settings</div>
   </div>
 
@@ -925,6 +959,30 @@ select.fi option{background:var(--bg2);}
     </div><!-- /settings-page -->
   </div><!-- /tabview-settings -->
 
+  <!-- Bot Engine tab -->
+  <div class="tab-view" id="tabview-bots">
+    <div class="bots-page">
+      <!-- Section A: Bots -->
+      <div class="bots-col">
+        <div class="sec-head">
+          <span class="sec-title">Trading Bots</span>
+          <span id="bot-count" class="tag tag-blue">0 bots</span>
+          <button class="btn btn-primary btn-sm" style="margin-left:auto;" onclick="openBotModal()">+ Add Bot</button>
+        </div>
+        <div id="bots-list"></div>
+      </div>
+      <!-- Section B: Strategies -->
+      <div class="bots-col">
+        <div class="sec-head">
+          <span class="sec-title">Strategies</span>
+          <span id="strat-count" class="tag tag-blue">0 strategies</span>
+          <button class="btn btn-primary btn-sm" style="margin-left:auto;" onclick="openStrategyModal()">+ Create Strategy</button>
+        </div>
+        <div id="strategies-list"></div>
+      </div>
+    </div>
+  </div><!-- /tabview-bots -->
+
 </div><!-- /content -->
 </main>
 </div><!-- /app -->
@@ -956,6 +1014,217 @@ select.fi option{background:var(--bg2);}
       <button class="btn btn-ghost btn-sm" onclick="closeModal('confirm-modal')">Cancel</button>
       <button class="btn btn-danger btn-sm" id="confirm-ok">Confirm</button>
     </div>
+  </div>
+</div>
+
+<!-- BOT MODAL -->
+<div class="modal-backdrop hidden" id="bot-modal">
+  <div class="modal">
+    <div class="modal-header">
+      <span class="modal-title" id="bot-modal-title">Add Bot</span>
+      <button class="modal-close" onclick="closeModal('bot-modal')" aria-label="Close">✕</button>
+    </div>
+    <div class="modal-body">
+      <input type="hidden" id="bm-id"/>
+      <div class="fg"><label class="fl" for="bm-label">Label</label><input class="fi" id="bm-label" placeholder="Gold Scalper"/></div>
+      <div class="frow">
+        <div class="fg"><label class="fl" for="bm-symbol">Symbol</label><input class="fi" id="bm-symbol" placeholder="XAUUSD"/></div>
+        <div class="fg"><label class="fl" for="bm-tf">Timeframe</label>
+          <select class="fi" id="bm-tf"><option>M1</option><option selected>M5</option><option>M15</option><option>H1</option></select></div>
+      </div>
+      <div class="frow">
+        <div class="fg"><label class="fl" for="bm-volume">Base Volume (lots)</label><input class="fi" id="bm-volume" type="number" step="0.01" min="0.01" value="0.1"/></div>
+        <div class="fg"><label class="fl" for="bm-magic">Magic Number</label><input class="fi" id="bm-magic" type="number" placeholder="990001"/></div>
+      </div>
+      <div class="fg"><label class="fl">Execution Mode</label>
+        <div class="role-toggle">
+          <button type="button" class="role-btn active" id="bm-mode-standalone" onclick="setBotMode('standalone')">Standalone</button>
+          <button type="button" class="role-btn" id="bm-mode-connected" onclick="setBotMode('connected')">Connected</button>
+        </div>
+        <div style="font-family:var(--mono);font-size:9px;color:var(--text3);margin-top:4px;" id="bm-mode-hint">Bot trades directly on its own MT5 account</div>
+      </div>
+      <div class="fg"><label class="chk-row" style="font-size:11px;"><input type="checkbox" id="bm-fwd"/> Forward test (results tagged forward_test)</label></div>
+    </div>
+    <div class="modal-footer">
+      <button class="btn btn-ghost btn-sm" onclick="closeModal('bot-modal')">Cancel</button>
+      <button class="btn btn-primary btn-sm" id="bm-save" onclick="saveBot()">Save Bot</button>
+    </div>
+  </div>
+</div>
+
+<!-- STRATEGY MODAL -->
+<div class="modal-backdrop hidden" id="strategy-modal">
+  <div class="modal" style="max-width:560px;">
+    <div class="modal-header">
+      <span class="modal-title" id="strategy-modal-title">Create Strategy</span>
+      <button class="modal-close" onclick="closeModal('strategy-modal')" aria-label="Close">✕</button>
+    </div>
+    <div class="modal-body">
+      <input type="hidden" id="sm-id"/>
+      <div class="frow">
+        <div class="fg"><label class="fl" for="sm-name">Name</label><input class="fi" id="sm-name" placeholder="RSI Reversal"/></div>
+        <div class="fg"><label class="fl" for="sm-symbol">Symbol</label><input class="fi" id="sm-symbol" placeholder="XAUUSD"/></div>
+      </div>
+      <div class="fg" style="max-width:160px;"><label class="fl" for="sm-tf">Timeframe</label>
+        <select class="fi" id="sm-tf"><option>M1</option><option selected>M5</option><option>M15</option><option>H1</option></select></div>
+
+      <div class="strat-modal-tabs">
+        <div class="strat-modal-tab active" id="sm-tab-btn-visual" onclick="setStratTab('visual')" tabindex="0" onkeydown="if(event.key==='Enter'||event.key===' '){event.preventDefault();setStratTab('visual')}">Visual Builder</div>
+        <div class="strat-modal-tab" id="sm-tab-btn-code" onclick="setStratTab('code')" tabindex="0" onkeydown="if(event.key==='Enter'||event.key===' '){event.preventDefault();setStratTab('code')}">Python Code</div>
+      </div>
+
+      <!-- VISUAL TAB -->
+      <div id="sm-tab-visual">
+        <div class="sm-section">
+          <div class="sm-section-title">Entry Condition</div>
+          <div class="frow">
+            <div class="fg"><label class="fl" for="sm-e-ind">Indicator</label>
+              <select class="fi" id="sm-e-ind"><option>RSI</option><option>MACD</option><option>EMA</option><option>SMA</option><option>BB</option><option>ATR</option><option>Stoch</option><option>CCI</option></select></div>
+            <div class="fg"><label class="fl" for="sm-e-period">Period</label><input class="fi" id="sm-e-period" type="number" value="14"/></div>
+          </div>
+          <div class="frow">
+            <div class="fg"><label class="fl" for="sm-e-op">Operator</label>
+              <select class="fi" id="sm-e-op"><option value="lt">&lt; less than</option><option value="gt">&gt; greater than</option><option value="cross_above">crosses above</option><option value="cross_below">crosses below</option></select></div>
+            <div class="fg"><label class="fl" for="sm-e-val">Value</label><input class="fi" id="sm-e-val" type="number" step="any" value="30"/></div>
+          </div>
+          <div class="fg" style="max-width:140px;"><label class="fl" for="sm-e-dir">Direction</label>
+            <select class="fi" id="sm-e-dir"><option>BUY</option><option>SELL</option></select></div>
+        </div>
+
+        <div class="sm-section">
+          <div class="sm-section-title">Exit</div>
+          <div class="fg" style="max-width:160px;"><label class="fl" for="sm-x-type">Exit Type</label>
+            <select class="fi" id="sm-x-type" onchange="document.getElementById('sm-x-ind-row').style.display=this.value==='indicator'?'':'none'"><option value="indicator">Indicator</option><option value="fixed">Fixed TP/SL only</option></select></div>
+          <div id="sm-x-ind-row">
+            <div class="frow">
+              <div class="fg"><label class="fl" for="sm-x-ind">Indicator</label>
+                <select class="fi" id="sm-x-ind"><option>RSI</option><option>MACD</option><option>EMA</option><option>SMA</option><option>BB</option><option>ATR</option><option>Stoch</option><option>CCI</option></select></div>
+              <div class="fg"><label class="fl" for="sm-x-period">Period</label><input class="fi" id="sm-x-period" type="number" value="14"/></div>
+            </div>
+            <div class="frow">
+              <div class="fg"><label class="fl" for="sm-x-op">Operator</label>
+                <select class="fi" id="sm-x-op"><option value="gt">&gt; greater than</option><option value="lt">&lt; less than</option><option value="cross_above">crosses above</option><option value="cross_below">crosses below</option></select></div>
+              <div class="fg"><label class="fl" for="sm-x-val">Value</label><input class="fi" id="sm-x-val" type="number" step="any" value="70"/></div>
+            </div>
+          </div>
+          <div class="frow">
+            <div class="fg"><label class="fl" for="sm-x-tp">TP (pips, blank = none)</label><input class="fi" id="sm-x-tp" type="number" step="any"/></div>
+            <div class="fg"><label class="fl" for="sm-x-sl">SL (pips, blank = none)</label><input class="fi" id="sm-x-sl" type="number" step="any"/></div>
+          </div>
+          <div class="fg"><label class="chk-row" style="font-size:11px;"><input type="checkbox" id="sm-x-trail" onchange="document.getElementById('sm-x-trail-row').style.display=this.checked?'':'none'"/> Trailing stop</label></div>
+          <div id="sm-x-trail-row" style="display:none;">
+            <div class="frow">
+              <div class="fg"><label class="fl" for="sm-x-trailtype">Trail Type</label>
+                <select class="fi" id="sm-x-trailtype"><option value="atr">ATR-based</option><option value="fixed">Fixed pips</option></select></div>
+              <div class="fg"><label class="fl" for="sm-x-trailval">ATR × / pips</label><input class="fi" id="sm-x-trailval" type="number" step="any" value="1.5"/></div>
+            </div>
+          </div>
+        </div>
+
+        <div class="sm-section">
+          <div class="sm-section-title">Position Management</div>
+          <div class="frow">
+            <div class="fg"><label class="fl" for="sm-p-pct">Partial close % (blank = off)</label><input class="fi" id="sm-p-pct" type="number" min="1" max="99"/></div>
+            <div class="fg"><label class="fl" for="sm-p-rr">…at R:R milestone</label><input class="fi" id="sm-p-rr" type="number" step="any" value="1.0"/></div>
+          </div>
+          <div class="frow">
+            <div class="fg"><label class="fl" for="sm-p-max">Max concurrent</label><input class="fi" id="sm-p-max" type="number" value="1" min="1"/></div>
+            <div class="fg" style="display:flex;align-items:flex-end;padding-bottom:6px;"><label class="chk-row" style="font-size:11px;"><input type="checkbox" id="sm-p-rev"/> Reverse on signal</label></div>
+          </div>
+        </div>
+
+        <div class="sm-section">
+          <div class="sm-section-title">Filters</div>
+          <div class="fg"><label class="fl">Sessions (none = all)</label>
+            <div class="chk-row">
+              <label><input type="checkbox" class="sm-f-sess" value="sydney"/> Sydney</label>
+              <label><input type="checkbox" class="sm-f-sess" value="tokyo"/> Tokyo</label>
+              <label><input type="checkbox" class="sm-f-sess" value="london"/> London</label>
+              <label><input type="checkbox" class="sm-f-sess" value="new_york"/> New York</label>
+            </div>
+          </div>
+          <div class="fg"><label class="fl">Trading days</label>
+            <div class="chk-row">
+              <label><input type="checkbox" class="sm-f-day" value="0" checked/> Mon</label>
+              <label><input type="checkbox" class="sm-f-day" value="1" checked/> Tue</label>
+              <label><input type="checkbox" class="sm-f-day" value="2" checked/> Wed</label>
+              <label><input type="checkbox" class="sm-f-day" value="3" checked/> Thu</label>
+              <label><input type="checkbox" class="sm-f-day" value="4" checked/> Fri</label>
+            </div>
+          </div>
+          <div class="fg"><label class="chk-row" style="font-size:11px;"><input type="checkbox" id="sm-f-trend" onchange="document.getElementById('sm-f-trend-row').style.display=this.checked?'':'none'"/> Higher-TF trend filter</label></div>
+          <div id="sm-f-trend-row" style="display:none;">
+            <div class="frow">
+              <div class="fg"><label class="fl" for="sm-f-trendtf">Trend TF</label>
+                <select class="fi" id="sm-f-trendtf"><option>H1</option><option>H4</option><option>D1</option></select></div>
+              <div class="fg"><label class="fl" for="sm-f-trendema">EMA period</label><input class="fi" id="sm-f-trendema" type="number" value="200"/></div>
+            </div>
+          </div>
+          <div class="frow">
+            <div class="fg"><label class="fl" for="sm-f-atrmin">ATR min (blank = off)</label><input class="fi" id="sm-f-atrmin" type="number" step="any"/></div>
+            <div class="fg"><label class="fl" for="sm-f-atrmax">ATR max (blank = off)</label><input class="fi" id="sm-f-atrmax" type="number" step="any"/></div>
+          </div>
+        </div>
+
+        <div class="sm-section">
+          <div class="sm-section-title">Risk Controls</div>
+          <div class="frow">
+            <div class="fg"><label class="fl" for="sm-r-daily">Daily loss limit %</label><input class="fi" id="sm-r-daily" type="number" step="any" value="2.0"/></div>
+            <div class="fg"><label class="fl" for="sm-r-dd">Max drawdown %</label><input class="fi" id="sm-r-dd" type="number" step="any" value="5.0"/></div>
+          </div>
+          <div class="frow">
+            <div class="fg"><label class="fl" for="sm-r-cool">Cooldown after N losses</label><input class="fi" id="sm-r-cool" type="number" value="3"/></div>
+            <div class="fg"><label class="fl" for="sm-r-kill">Kill switch %</label><input class="fi" id="sm-r-kill" type="number" step="any" value="10.0"/></div>
+          </div>
+        </div>
+      </div>
+
+      <!-- CODE TAB -->
+      <div id="sm-tab-code" style="display:none;">
+        <div class="fg">
+          <label class="fl" for="sm-code">Python source — must define <span style="color:var(--blue-bright)">evaluate(market_data)</span> returning "BUY" | "SELL" | "CLOSE" | "HOLD"</label>
+          <textarea class="sm-code" id="sm-code" spellcheck="false" placeholder='def evaluate(market_data):&#10;    closes = market_data["close"]&#10;    state = market_data.get("state") or {}&#10;    # your logic here&#10;    return "HOLD"'></textarea>
+        </div>
+        <div style="display:flex;align-items:center;gap:10px;">
+          <button class="btn btn-ghost btn-sm" id="sm-validate-btn" onclick="validateStrategy()">Validate</button>
+          <span class="sm-badge" id="sm-code-badge"></span>
+        </div>
+      </div>
+    </div>
+    <div class="modal-footer">
+      <button class="btn btn-ghost btn-sm" onclick="closeModal('strategy-modal')">Cancel</button>
+      <button class="btn btn-primary btn-sm" id="sm-save" onclick="saveStrategy()">Save Strategy</button>
+    </div>
+  </div>
+</div>
+
+<!-- ASSIGN MODAL -->
+<div class="modal-backdrop hidden" id="assign-modal">
+  <div class="modal">
+    <div class="modal-header">
+      <span class="modal-title" id="assign-modal-title">Assign Strategy</span>
+      <button class="modal-close" onclick="closeModal('assign-modal')" aria-label="Close">✕</button>
+    </div>
+    <div class="modal-body">
+      <div class="fg"><label class="fl" for="assign-select" id="assign-select-label">Select</label>
+        <select class="fi" id="assign-select"></select></div>
+    </div>
+    <div class="modal-footer">
+      <button class="btn btn-ghost btn-sm" onclick="closeModal('assign-modal')">Cancel</button>
+      <button class="btn btn-primary btn-sm" id="assign-ok" onclick="confirmAssign()">Assign</button>
+    </div>
+  </div>
+</div>
+
+<!-- RESULTS MODAL -->
+<div class="modal-backdrop hidden" id="results-modal">
+  <div class="modal" style="max-width:640px;">
+    <div class="modal-header">
+      <span class="modal-title" id="results-modal-title">Strategy Results</span>
+      <button class="modal-close" onclick="closeModal('results-modal')" aria-label="Close">✕</button>
+    </div>
+    <div class="modal-body" id="results-body"></div>
+    <div class="modal-footer"><button class="btn btn-ghost btn-sm" onclick="closeModal('results-modal')">Close</button></div>
   </div>
 </div>
 
@@ -1621,6 +1890,7 @@ async function unlinkSlave(masterId,slaveId){
 // MODALS
 // ══════════════════════════════════════════════════════════════════════
 function closeModal(id){ document.getElementById(id).classList.add('hidden'); }
+function openModal(id){ document.getElementById(id).classList.remove('hidden'); }
 document.querySelectorAll('.modal-backdrop').forEach(el=>{ el.addEventListener('click',e=>{ if(e.target===el) el.classList.add('hidden'); }); });
 function showConfirm(msg,cb){
   document.getElementById('confirm-msg').textContent=msg;
@@ -1706,13 +1976,16 @@ function sparkline(key,w,h){
 // MAIN TAB SWITCHING
 // ══════════════════════════════════════════════════════════════════════
 function switchMainTab(tab) {
-  ['dashboard','protection','analytics','settings'].forEach(t => {
+  ['dashboard','protection','analytics','bots','settings'].forEach(t => {
     document.getElementById('maintab-'+t).classList.toggle('active', t===tab);
     document.getElementById('tabview-'+t).classList.toggle('active', t===tab);
   });
   if (tab==='settings')   refreshSettingsPage();
   if (tab==='protection') refreshProtection();
   if (tab==='analytics')  renderAnalytics();
+  if (tab==='bots')       refreshBotsTab();
+  clearInterval(_botsPollTimer);
+  if (tab==='bots') _botsPollTimer = setInterval(refreshBotsTab, 10000);
 }
 
 // ══════════════════════════════════════════════════════════════════════
@@ -2378,6 +2651,379 @@ try {
   if (savedUrl) { document.getElementById('cfg-url').value = savedUrl; BRIDGE = savedUrl.replace(/\/$/,''); }
   if (savedKey) document.getElementById('cfg-apikey').value = savedKey;
 } catch(e) {}
+
+// ══════════════════════════════════════════════════════════════════════
+// BOT ENGINE TAB
+// ══════════════════════════════════════════════════════════════════════
+let botsData=[], stratsData=[], _botsPollTimer=null;
+let _assignCtx=null;   // {type:'bot'|'strategy', id}
+let _stratTab='visual';
+let _botMode='standalone';
+
+async function refreshBotsTab(){
+  try{
+    const [bots, strats] = await Promise.all([
+      apiFetch('/api/v1/bots'), apiFetch('/api/v1/strategies')
+    ]);
+    botsData = bots; stratsData = strats;
+    renderBots(); renderStrategies();
+  }catch(e){
+    document.getElementById('bots-list').innerHTML =
+      `<div class="empty-state"><div class="empty-title">Bridge unreachable</div><div class="empty-sub">${esc(e.message)}</div></div>`;
+  }
+}
+
+function renderBots(){
+  const el=document.getElementById('bots-list');
+  document.getElementById('bot-count').textContent=`${botsData.length} bot${botsData.length!==1?'s':''}`;
+  if(!botsData.length){
+    el.innerHTML=`<div class="empty-state"><div class="empty-icon">🤖</div><div class="empty-title">No Bots Yet</div><div class="empty-sub">Click + Add Bot to create your first trading bot</div></div>`;
+    return;
+  }
+  el.innerHTML=botsData.map(b=>{
+    const statusTag = b.status==='running' ? '<span class="tag tag-green">Running</span>'
+                    : b.status==='killed'  ? '<span class="tag tag-red">Killed</span>'
+                    : '<span class="tag tag-gray">Stopped</span>';
+    const modeTag = b.mode==='connected' ? '<span class="tag tag-blue">Connected</span>' : '<span class="tag tag-purple">Standalone</span>';
+    const fwdTag  = b.forward_test ? '<span class="tag tag-amber">Fwd Test</span>' : '';
+    const pnl = b.daily_pnl||0;
+    const pnlColor = pnl>0?'var(--green)':pnl<0?'var(--red)':'var(--text3)';
+    return `<div class="bot-card ${b.status}">
+      <div class="bc-head">
+        <span class="dot ${b.status==='running'?'dot-green':b.status==='killed'?'dot-red':'dot-gray'}"></span>
+        <span class="bc-label">${esc(b.label)}</span>
+        ${statusTag}${modeTag}${fwdTag}
+      </div>
+      <div class="bc-meta">
+        <span>${esc(b.symbol||'—')}</span><span>${esc(b.timeframe)}</span>
+        <span>magic:${b.magic_number}</span><span>${b.base_volume}L</span>
+        <span style="color:${pnlColor}">day P&L: ${pnl>=0?'+':''}${fmt(pnl)}</span>
+        ${b.open_position?'<span style="color:var(--blue-bright)">position open</span>':''}
+      </div>
+      <div class="bc-strat">${b.strategy_name?`Strategy: <b>${esc(b.strategy_name)}</b>`:'<span style="color:var(--amber)">No strategy assigned — bot cannot run</span>'}</div>
+      <div class="bc-actions">
+        <button class="btn ${b.enabled?'btn-warn':'btn-primary'} btn-xs" onclick="toggleBot('${b.bot_id}',${!b.enabled})">${b.enabled?'⏸ Pause':'▶ Start'}</button>
+        <button class="btn btn-ghost btn-xs" onclick="openAssignFromBot('${b.bot_id}')">Assign Strategy</button>
+        <button class="btn btn-ghost btn-xs" onclick="viewResults('${b.bot_id}','${esc(b.label)}')">Results</button>
+        <button class="btn btn-ghost btn-xs" onclick="openBotModal('${b.bot_id}')">Edit</button>
+        <button class="btn btn-danger btn-xs" onclick="deleteBot('${b.bot_id}','${esc(b.label)}')">Delete</button>
+      </div>
+    </div>`;
+  }).join('');
+}
+
+function renderStrategies(){
+  const el=document.getElementById('strategies-list');
+  document.getElementById('strat-count').textContent=`${stratsData.length} strateg${stratsData.length!==1?'ies':'y'}`;
+  if(!stratsData.length){
+    el.innerHTML=`<div class="empty-state"><div class="empty-icon">📐</div><div class="empty-title">No Strategies</div><div class="empty-sub">Create a visual or Python strategy to power your bots</div></div>`;
+    return;
+  }
+  el.innerHTML=stratsData.map(s=>{
+    const bot = botsData.find(b=>b.bot_id===s.assigned_bot_id);
+    const modeTag = s.mode==='visual' ? '<span class="tag tag-blue">Visual</span>' : '<span class="tag tag-purple">Code</span>';
+    return `<div class="strat-card">
+      <div class="bc-head">
+        <span class="bc-label">${esc(s.name)}</span>${modeTag}
+        ${s.file_missing?'<span class="tag tag-red">File missing</span>':''}
+      </div>
+      <div class="bc-meta"><span>${esc(s.symbol)}</span><span>${esc(s.timeframe)}</span></div>
+      <div class="bc-strat">${bot?`Assigned to: <b>${esc(bot.label)}</b>`:'<span style="color:var(--text3)">Not assigned</span>'}</div>
+      <div class="bc-actions">
+        <button class="btn btn-ghost btn-xs" onclick="openStrategyModal('${s.strategy_id}')">Edit</button>
+        <button class="btn btn-ghost btn-xs" onclick="openAssignFromStrategy('${s.strategy_id}')">Assign to Bot</button>
+        ${bot?`<button class="btn btn-ghost btn-xs" onclick="viewResults('${bot.bot_id}','${esc(s.name)}')">View Results</button>`:''}
+        <button class="btn btn-danger btn-xs" onclick="deleteStrategy('${s.strategy_id}','${esc(s.name)}')">Delete</button>
+      </div>
+    </div>`;
+  }).join('');
+}
+
+// ── Bot CRUD ──
+function setBotMode(m){
+  _botMode=m;
+  document.getElementById('bm-mode-standalone').classList.toggle('active',m==='standalone');
+  document.getElementById('bm-mode-connected').classList.toggle('active',m==='connected');
+  document.getElementById('bm-mode-hint').textContent = m==='standalone'
+    ? 'Bot trades directly on its own MT5 account'
+    : 'Bot injects signals into the copier — linked slaves execute them';
+}
+
+function openBotModal(botId){
+  const b = botId ? botsData.find(x=>x.bot_id===botId) : null;
+  document.getElementById('bot-modal-title').textContent = b?'Edit Bot':'Add Bot';
+  document.getElementById('bm-id').value     = b?b.bot_id:'';
+  document.getElementById('bm-label').value  = b?b.label:'';
+  document.getElementById('bm-symbol').value = b?(b.symbol||''):'';
+  document.getElementById('bm-tf').value     = b?b.timeframe:'M5';
+  document.getElementById('bm-volume').value = b?b.base_volume:0.1;
+  document.getElementById('bm-magic').value  = b?b.magic_number:'';
+  document.getElementById('bm-fwd').checked  = b?b.forward_test:false;
+  setBotMode(b?b.mode:'standalone');
+  openModal('bot-modal');
+}
+
+async function saveBot(){
+  const id     = document.getElementById('bm-id').value;
+  const label  = document.getElementById('bm-label').value.trim();
+  const symbol = document.getElementById('bm-symbol').value.trim().toUpperCase();
+  const magic  = parseInt(document.getElementById('bm-magic').value);
+  const volume = parseFloat(document.getElementById('bm-volume').value);
+  if(!label||!symbol||!magic||!volume){ toast('Label, symbol, magic number and volume are required','error'); return; }
+  const payload = {label, symbol, timeframe:document.getElementById('bm-tf').value,
+    magic_number:magic, base_volume:volume, mode:_botMode,
+    forward_test:document.getElementById('bm-fwd').checked};
+  const btn = document.getElementById('bm-save');
+  await withBtn(btn,'Saving…',async()=>{
+    try{
+      if(id) await apiFetch(`/api/v1/bots/${id}`,'PATCH',payload);
+      else   await apiFetch('/api/v1/bots','POST',payload);
+      toast(id?'Bot updated':'Bot created','success');
+      closeModal('bot-modal');
+      await refreshBotsTab();
+    }catch(e){ toast(e.message,'error'); }
+  });
+}
+
+async function toggleBot(botId, enable){
+  try{
+    await apiFetch(`/api/v1/bots/${botId}`,'PATCH',{enabled:enable});
+    toast(enable?'Bot started':'Bot paused','success');
+    await refreshBotsTab();
+  }catch(e){ toast(e.message,'error'); }
+}
+
+function deleteBot(botId, label){
+  showConfirm(`Delete bot "${label}"? Its task will be stopped and its config removed.`, async()=>{
+    try{
+      await apiFetch(`/api/v1/bots/${botId}`,'DELETE');
+      toast('Bot deleted','success');
+      await refreshBotsTab();
+    }catch(e){ toast(e.message,'error'); }
+  });
+}
+
+// ── Strategy modal ──
+function setStratTab(t){
+  _stratTab=t;
+  document.getElementById('sm-tab-btn-visual').classList.toggle('active',t==='visual');
+  document.getElementById('sm-tab-btn-code').classList.toggle('active',t==='code');
+  document.getElementById('sm-tab-visual').style.display = t==='visual'?'':'none';
+  document.getElementById('sm-tab-code').style.display   = t==='code'?'':'none';
+}
+
+function openStrategyModal(stratId){
+  const s = stratId ? stratsData.find(x=>x.strategy_id===stratId) : null;
+  document.getElementById('strategy-modal-title').textContent = s?'Edit Strategy':'Create Strategy';
+  document.getElementById('sm-id').value     = s?s.strategy_id:'';
+  document.getElementById('sm-name').value   = s?s.name:'';
+  document.getElementById('sm-symbol').value = s?s.symbol:'';
+  document.getElementById('sm-tf').value     = s?s.timeframe:'M5';
+  document.getElementById('sm-code-badge').className='sm-badge';
+  if(s && s.mode==='code'){
+    setStratTab('code');
+    document.getElementById('sm-code').value = s.source_code||'';
+  } else {
+    setStratTab('visual');
+    if(s && s.blocks) fillVisualBuilder(s.blocks);
+  }
+  openModal('strategy-modal');
+}
+
+function fillVisualBuilder(bl){
+  const e=bl.entry||{}, x=bl.exit||{}, p=bl.position||{}, f=bl.filters||{}, r=bl.risk||{};
+  const set=(id,v)=>{ const el=document.getElementById(id); if(el!=null&&v!=null) el.value=v; };
+  set('sm-e-ind',e.indicator); set('sm-e-period',e.period); set('sm-e-op',e.operator);
+  set('sm-e-val',e.value); set('sm-e-dir',e.direction);
+  set('sm-x-type',x.type||'indicator'); set('sm-x-ind',x.indicator); set('sm-x-period',x.period);
+  set('sm-x-op',x.operator); set('sm-x-val',x.value); set('sm-x-tp',x.tp_pips); set('sm-x-sl',x.sl_pips);
+  document.getElementById('sm-x-ind-row').style.display=(x.type||'indicator')==='indicator'?'':'none';
+  document.getElementById('sm-x-trail').checked=!!x.trailing_stop;
+  document.getElementById('sm-x-trail-row').style.display=x.trailing_stop?'':'none';
+  set('sm-x-trailtype',x.trail_type||'atr');
+  set('sm-x-trailval',x.trail_type==='fixed'?x.trail_pips:x.trail_atr_multiplier);
+  set('sm-p-pct',p.partial_close_pct); set('sm-p-rr',p.partial_close_at_rr);
+  set('sm-p-max',p.max_concurrent||1);
+  document.getElementById('sm-p-rev').checked=!!p.reverse_on_signal;
+  document.querySelectorAll('.sm-f-sess').forEach(c=>c.checked=(f.sessions||[]).includes(c.value));
+  document.querySelectorAll('.sm-f-day').forEach(c=>c.checked=(f.days||[0,1,2,3,4]).includes(parseInt(c.value)));
+  document.getElementById('sm-f-trend').checked=!!f.trend_tf;
+  document.getElementById('sm-f-trend-row').style.display=f.trend_tf?'':'none';
+  set('sm-f-trendtf',f.trend_tf||'H1'); set('sm-f-trendema',f.trend_ema_period||200);
+  set('sm-f-atrmin',f.atr_min); set('sm-f-atrmax',f.atr_max);
+  set('sm-r-daily',r.daily_loss_limit_pct); set('sm-r-dd',r.max_drawdown_pct);
+  set('sm-r-cool',r.cooldown_after_losses); set('sm-r-kill',r.kill_switch_pct);
+}
+
+function collectVisualBlocks(){
+  const num=id=>{ const v=document.getElementById(id).value; return v===''?null:parseFloat(v); };
+  const xType=document.getElementById('sm-x-type').value;
+  const trail=document.getElementById('sm-x-trail').checked;
+  const trailType=document.getElementById('sm-x-trailtype').value;
+  const trailVal=num('sm-x-trailval');
+  const sessions=[...document.querySelectorAll('.sm-f-sess:checked')].map(c=>c.value);
+  const days=[...document.querySelectorAll('.sm-f-day:checked')].map(c=>parseInt(c.value));
+  const trend=document.getElementById('sm-f-trend').checked;
+  return {
+    entry:{ indicator:document.getElementById('sm-e-ind').value, period:num('sm-e-period')||14,
+      operator:document.getElementById('sm-e-op').value, value:num('sm-e-val'),
+      direction:document.getElementById('sm-e-dir').value },
+    exit:{ type:xType,
+      indicator:xType==='indicator'?document.getElementById('sm-x-ind').value:null,
+      period:xType==='indicator'?(num('sm-x-period')||14):null,
+      operator:xType==='indicator'?document.getElementById('sm-x-op').value:null,
+      value:xType==='indicator'?num('sm-x-val'):null,
+      tp_pips:num('sm-x-tp'), sl_pips:num('sm-x-sl'),
+      trailing_stop:trail, trail_type:trail?trailType:null,
+      trail_atr_multiplier:trail&&trailType==='atr'?trailVal:null,
+      trail_pips:trail&&trailType==='fixed'?trailVal:null },
+    position:{ partial_close_pct:num('sm-p-pct'), partial_close_at_rr:num('sm-p-rr'),
+      max_concurrent:num('sm-p-max')||1,
+      reverse_on_signal:document.getElementById('sm-p-rev').checked },
+    filters:{ sessions:sessions.length?sessions:null,
+      trend_tf:trend?document.getElementById('sm-f-trendtf').value:null,
+      trend_ema_period:trend?(num('sm-f-trendema')||200):null,
+      atr_min:num('sm-f-atrmin'), atr_max:num('sm-f-atrmax'),
+      days:days.length?days:null },
+    risk:{ daily_loss_limit_pct:num('sm-r-daily'), max_drawdown_pct:num('sm-r-dd'),
+      cooldown_after_losses:num('sm-r-cool'), kill_switch_pct:num('sm-r-kill') }
+  };
+}
+
+function buildStrategyPayload(){
+  const name=document.getElementById('sm-name').value.trim();
+  const symbol=document.getElementById('sm-symbol').value.trim().toUpperCase();
+  if(!name||!symbol){ toast('Name and symbol are required','error'); return null; }
+  const payload={name, symbol, timeframe:document.getElementById('sm-tf').value, mode:_stratTab};
+  if(_stratTab==='visual') payload.blocks=collectVisualBlocks();
+  else {
+    payload.source_code=document.getElementById('sm-code').value;
+    if(!payload.source_code.trim()){ toast('Python source is empty','error'); return null; }
+  }
+  return payload;
+}
+
+async function validateStrategy(){
+  const badge=document.getElementById('sm-code-badge');
+  const src=document.getElementById('sm-code').value;
+  badge.className='sm-badge';
+  if(!/def\s+evaluate\s*\(/.test(src)){
+    badge.className='sm-badge fail'; badge.textContent='✕ Must define evaluate(market_data)';
+    return;
+  }
+  // server-side check: full syntax validation happens on save; a temp POST
+  // would persist a draft, so confirm structure client-side only here
+  badge.className='sm-badge ok'; badge.textContent='✓ evaluate() found — full syntax check runs on Save';
+}
+
+async function saveStrategy(){
+  const payload=buildStrategyPayload();
+  if(!payload) return;
+  const id=document.getElementById('sm-id').value;
+  const btn=document.getElementById('sm-save');
+  const badge=document.getElementById('sm-code-badge');
+  await withBtn(btn,'Saving…',async()=>{
+    try{
+      if(id) await apiFetch(`/api/v1/strategies/${id}`,'PUT',payload);
+      else   await apiFetch('/api/v1/strategies','POST',payload);
+      toast(id?'Strategy updated':'Strategy created','success');
+      closeModal('strategy-modal');
+      await refreshBotsTab();
+    }catch(e){
+      if(_stratTab==='code'){ badge.className='sm-badge fail'; badge.textContent='✕ '+e.message; }
+      toast(e.message,'error');
+    }
+  });
+}
+
+function deleteStrategy(stratId, name){
+  showConfirm(`Delete strategy "${name}"? Its file will be removed and any bot using it will stop.`, async()=>{
+    try{
+      await apiFetch(`/api/v1/strategies/${stratId}`,'DELETE');
+      toast('Strategy deleted','success');
+      await refreshBotsTab();
+    }catch(e){ toast(e.message,'error'); }
+  });
+}
+
+// ── Assign ──
+function openAssignFromBot(botId){
+  _assignCtx={type:'bot', id:botId};
+  const bot=botsData.find(b=>b.bot_id===botId);
+  document.getElementById('assign-modal-title').textContent=`Assign Strategy → ${bot?bot.label:''}`;
+  document.getElementById('assign-select-label').textContent='Strategy';
+  const sel=document.getElementById('assign-select');
+  sel.innerHTML='<option value="">— Unassign —</option>'+stratsData.map(s=>
+    `<option value="${s.strategy_id}" ${s.assigned_bot_id===botId?'selected':''}>${esc(s.name)} (${esc(s.symbol)} ${esc(s.timeframe)})</option>`).join('');
+  openModal('assign-modal');
+}
+
+function openAssignFromStrategy(stratId){
+  _assignCtx={type:'strategy', id:stratId};
+  const s=stratsData.find(x=>x.strategy_id===stratId);
+  document.getElementById('assign-modal-title').textContent=`Assign "${s?s.name:''}" → Bot`;
+  document.getElementById('assign-select-label').textContent='Bot';
+  const sel=document.getElementById('assign-select');
+  sel.innerHTML=botsData.map(b=>
+    `<option value="${b.bot_id}" ${s&&s.assigned_bot_id===b.bot_id?'selected':''}>${esc(b.label)} (${esc(b.symbol||'—')})</option>`).join('');
+  if(!botsData.length) sel.innerHTML='<option value="">No bots — create one first</option>';
+  openModal('assign-modal');
+}
+
+async function confirmAssign(){
+  if(!_assignCtx) return;
+  const sel=document.getElementById('assign-select').value;
+  const btn=document.getElementById('assign-ok');
+  let botId, stratId;
+  if(_assignCtx.type==='bot'){ botId=_assignCtx.id; stratId=sel||null; }
+  else { stratId=_assignCtx.id; botId=sel; if(!botId){ toast('Select a bot','error'); return; } }
+  await withBtn(btn,'Assigning…',async()=>{
+    try{
+      await apiFetch(`/api/v1/bots/${botId}/strategy`,'POST',{strategy_id:stratId});
+      toast(stratId?'Strategy assigned':'Strategy unassigned','success');
+      closeModal('assign-modal');
+      await refreshBotsTab();
+    }catch(e){ toast(e.message,'error'); }
+  });
+}
+
+// ── Results ──
+async function viewResults(botId, label){
+  document.getElementById('results-modal-title').textContent=`Results — ${label}`;
+  const body=document.getElementById('results-body');
+  body.innerHTML='<div style="font-family:var(--mono);font-size:11px;color:var(--text3);">Loading…</div>';
+  openModal('results-modal');
+  try{
+    const rows=await apiFetch(`/api/v1/bots/${botId}/results`);
+    if(!rows.length){
+      body.innerHTML='<div class="empty-state"><div class="empty-title">No results yet</div><div class="empty-sub">Results appear when the bot opens or closes a trade</div></div>';
+      return;
+    }
+    const closed=rows.filter(r=>r.pnl!=null);
+    const totalPnl=closed.reduce((a,r)=>a+r.pnl,0);
+    const wins=closed.filter(r=>r.pnl>0).length;
+    body.innerHTML=`
+      <div style="display:flex;gap:14px;margin-bottom:12px;font-family:var(--mono);font-size:11px;">
+        <span>Trades: <b style="color:var(--text)">${rows.length}</b></span>
+        <span>Closed: <b style="color:var(--text)">${closed.length}</b></span>
+        <span>Win rate: <b style="color:var(--text)">${closed.length?Math.round(wins/closed.length*100)+'%':'—'}</b></span>
+        <span>Total P&L: <b style="color:${totalPnl>=0?'var(--green)':'var(--red)'}">${totalPnl>=0?'+':''}${fmt(totalPnl)}</b></span>
+      </div>
+      <table class="results-table">
+        <thead><tr><th>Time</th><th>Signal</th><th>Entry</th><th>Exit</th><th>P&L</th><th>Mode</th></tr></thead>
+        <tbody>${rows.map(r=>`<tr>
+          <td>${esc((r.executed_at||'').replace('T',' ').slice(0,19))}</td>
+          <td>${esc(r.signal_direction||'—')}</td>
+          <td>${r.entry_price!=null?r.entry_price:'—'}</td>
+          <td>${r.exit_price!=null?r.exit_price:'—'}</td>
+          <td style="color:${r.pnl>0?'var(--green)':r.pnl<0?'var(--red)':'var(--text3)'}">${r.pnl!=null?(r.pnl>=0?'+':'')+fmt(r.pnl):'open'}</td>
+          <td>${r.mode==='forward_test'?'<span class="tag tag-amber">fwd</span>':'<span class="tag tag-green">live</span>'}</td>
+        </tr>`).join('')}</tbody>
+      </table>`;
+  }catch(e){
+    body.innerHTML=`<div style="color:var(--red);font-family:var(--mono);font-size:11px;">${esc(e.message)}</div>`;
+  }
+}
 
 document.getElementById('cfg-url').addEventListener('change',e=>{ BRIDGE=e.target.value.replace(/\/$/,''); });
 setInterval(()=>{

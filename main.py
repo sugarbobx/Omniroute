@@ -15,18 +15,25 @@ from contextlib import asynccontextmanager
 from datetime import datetime
 from typing import Optional
 
+import ast
+import uuid
+
 import uvicorn
-from fastapi import FastAPI, HTTPException, BackgroundTasks, Request, WebSocket, WebSocketDisconnect
+from fastapi import APIRouter, FastAPI, HTTPException, BackgroundTasks, Request, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
+from pydantic import BaseModel, Field
+from typing import Optional as Opt
 
 import database as db
 import notifier
+import strategy_loader
+from bot import BotEngine
 from models import (
-    AccountRole, AddAccountRequest, LinkRequest, MasterAccount,
+    AccountRole, AddAccountRequest, ConnectionStatus, LinkRequest, MasterAccount,
     ModifySignal, SlaveAccount, TradeProtection, TradeSignal, UnlinkRequest,
 )
 from protection import RISK_PRESETS
-from router import CopyRouter
+from router import CopyRouter, MasterState
 from config import settings
 
 logging.basicConfig(
@@ -37,6 +44,7 @@ logging.basicConfig(
 logger = logging.getLogger("main")
 
 router = CopyRouter()
+bot_engine = BotEngine(router)
 
 
 class WSManager:
@@ -58,9 +66,10 @@ ws_manager = WSManager()
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    logger.info("🚀 OmniRoute v2.2 starting...")
+    logger.info("🚀 OmniRoute v2.3 starting...")
     db.init_db()
     await router.startup()
+    await bot_engine.reload_and_synchronize()
     async def _push():
         while True:
             await asyncio.sleep(2)
@@ -72,6 +81,8 @@ async def lifespan(app: FastAPI):
         yield
     finally:
         push_task.cancel()
+        for bot_id in list(bot_engine.active_tasks.keys()):
+            await bot_engine.kill_bot_task(bot_id)
         await router.shutdown()
 
 
@@ -329,6 +340,257 @@ async def get_status(): return router.get_full_status()
 
 @app.get("/logs", tags=["Monitoring"])
 async def get_logs(limit: int = 200): return router.get_recent_logs(limit)
+
+
+# ── Bot Engine API ────────────────────────────────────────────────────────────
+
+bot_api = APIRouter(prefix="/api/v1/bots", tags=["Bots"])
+
+
+class BotCreateRequest(BaseModel):
+    label: str
+    symbol: str
+    timeframe: str = "M5"
+    magic_number: int
+    base_volume: float = Field(0.1, gt=0)
+    mode: str = "standalone"           # standalone | connected
+    forward_test: bool = False
+    enabled: bool = True
+
+
+def _register_virtual_master(bot: dict):
+    """Expose the bot in the copier's master registry so connected-mode signals
+    route through router.route_signal and the bot shows on the dashboard."""
+    acct = MasterAccount(
+        master_id=bot["bot_id"], label=f"🤖 {bot['label']}", login=0, password="-",
+        server="virtual", terminal_path="virtual", magic_number=bot["magic_number"],
+    )
+    state = MasterState(acct)
+    state.status = ConnectionStatus.CONNECTED
+    router.masters[bot["bot_id"]] = state
+    router._magic_index[bot["magic_number"]] = bot["bot_id"]
+
+
+def _bot_summary(b: dict) -> dict:
+    strat = db.get_strategy_for_bot(b["bot_id"])
+    return {**b,
+            "strategy_id": strat["strategy_id"] if strat else None,
+            "strategy_name": strat["name"] if strat else None,
+            **bot_engine.get_bot_status(b["bot_id"])}
+
+
+@bot_api.get("")
+async def list_bots():
+    return [_bot_summary(b) for b in db.get_all_virtual_bots()]
+
+
+@bot_api.post("")
+async def create_bot(req: BotCreateRequest):
+    if req.mode not in ("standalone", "connected"):
+        raise HTTPException(400, "mode must be 'standalone' or 'connected'")
+    if req.timeframe not in ("M1", "M5", "M15", "H1"):
+        raise HTTPException(400, "timeframe must be one of M1, M5, M15, H1")
+    if req.magic_number in router._magic_index:
+        raise HTTPException(409, f"magic_number {req.magic_number} already in use")
+    bot = {
+        "bot_id": str(uuid.uuid4())[:8], "label": req.label, "symbol": req.symbol.upper(),
+        "timeframe": req.timeframe, "magic_number": req.magic_number,
+        "base_volume": req.base_volume, "mode": req.mode,
+        "forward_test": req.forward_test, "enabled": req.enabled, "strategy_name": None,
+    }
+    db.save_virtual_bot(bot)
+    _register_virtual_master(bot)
+    await bot_engine.reload_and_synchronize()
+    return {"status": "created", **_bot_summary(bot)}
+
+
+@bot_api.patch("/{bot_id}")
+async def update_bot(bot_id: str, updates: dict):
+    if not db.get_virtual_bot(bot_id):
+        raise HTTPException(404, f"Bot {bot_id} not found")
+    allowed = {"label", "symbol", "timeframe", "base_volume", "magic_number",
+               "mode", "forward_test", "enabled"}
+    updates = {k: v for k, v in updates.items() if k in allowed}
+    if "symbol" in updates:
+        updates["symbol"] = str(updates["symbol"]).upper()
+    if "magic_number" in updates:
+        owner = router._magic_index.get(updates["magic_number"])
+        if owner and owner != bot_id:
+            raise HTTPException(409, f"magic_number {updates['magic_number']} already in use")
+    db.update_virtual_bot(bot_id, updates)
+    bot = db.get_virtual_bot(bot_id)
+    # keep the copier registry in step
+    old_state = router.masters.get(bot_id)
+    if old_state:
+        router._magic_index.pop(old_state.account.magic_number, None)
+    _register_virtual_master(bot)
+    await bot_engine.kill_bot_task(bot_id)
+    await bot_engine.reload_and_synchronize()
+    return {"status": "updated", **_bot_summary(bot)}
+
+
+@bot_api.delete("/{bot_id}")
+async def delete_bot(bot_id: str):
+    bot = db.get_virtual_bot(bot_id)
+    if not bot:
+        raise HTTPException(404, f"Bot {bot_id} not found")
+    await bot_engine.kill_bot_task(bot_id)
+    bot_engine.execution_states.pop(bot_id, None)
+    db.delete_virtual_bot(bot_id)
+    state = router.masters.pop(bot_id, None)
+    if state:
+        router._magic_index.pop(state.account.magic_number, None)
+    return {"status": "deleted", "bot_id": bot_id}
+
+
+@bot_api.post("/{bot_id}/strategy")
+async def assign_strategy(bot_id: str, payload: dict):
+    strategy_id = payload.get("strategy_id")
+    bot = db.get_virtual_bot(bot_id)
+    if not bot:
+        raise HTTPException(404, f"Bot {bot_id} not found")
+    strat = db.get_strategy(strategy_id) if strategy_id else None
+    if strategy_id and not strat:
+        raise HTTPException(404, f"Strategy {strategy_id} not found")
+    db.assign_strategy_to_bot(strategy_id, bot_id if strategy_id else None)
+    db.update_virtual_bot(bot_id, {"strategy_name": strat["name"] if strat else None})
+    await bot_engine.kill_bot_task(bot_id)
+    await bot_engine.reload_and_synchronize()
+    return {"status": "assigned", "bot_id": bot_id, "strategy_id": strategy_id}
+
+
+@bot_api.post("/sync")
+async def sync_bots():
+    await bot_engine.reload_and_synchronize()
+    return {"status": "synchronized", "running": list(bot_engine.active_tasks.keys())}
+
+
+@bot_api.get("/{bot_id}/results")
+async def bot_results(bot_id: str, limit: int = 200):
+    if not db.get_virtual_bot(bot_id):
+        raise HTTPException(404, f"Bot {bot_id} not found")
+    return db.get_strategy_results(bot_id, limit)
+
+
+app.include_router(bot_api)
+
+
+# ── Strategy API ──────────────────────────────────────────────────────────────
+
+strategy_api = APIRouter(prefix="/api/v1/strategies", tags=["Strategies"])
+
+
+class StrategyCreateRequest(BaseModel):
+    name: str
+    mode: str                      # visual | code
+    symbol: str
+    timeframe: str
+    blocks: Opt[dict] = None       # visual mode
+    source_code: Opt[str] = None   # code mode
+
+
+def _validate_strategy_payload(req: StrategyCreateRequest):
+    if req.mode == "visual":
+        if not req.blocks or "entry" not in req.blocks:
+            raise HTTPException(400, "Visual strategy requires a 'blocks' object with an 'entry' block")
+    elif req.mode == "code":
+        if not req.source_code:
+            raise HTTPException(400, "Code strategy requires 'source_code'")
+        try:
+            tree = ast.parse(req.source_code)
+        except SyntaxError as e:
+            raise HTTPException(400, f"Python syntax error: {e}")
+        fn_names = [n.name for n in ast.walk(tree)
+                    if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef))]
+        if "evaluate" not in fn_names:
+            raise HTTPException(400, "Code strategy must define evaluate(market_data)")
+    else:
+        raise HTTPException(400, "mode must be 'visual' or 'code'")
+
+
+def _write_strategy_file(strategy_id: str, req: StrategyCreateRequest) -> str:
+    path = strategy_loader.strategy_file_path(strategy_id, req.mode)
+    if req.mode == "visual":
+        path.write_text(json.dumps(req.blocks, indent=2), encoding="utf-8")
+    else:
+        path.write_text(req.source_code, encoding="utf-8")
+    return str(path)
+
+
+def _strategy_with_content(row: dict) -> dict:
+    out = dict(row)
+    try:
+        text = open(row["file_path"], encoding="utf-8").read()
+        if row["mode"] == "visual":
+            out["blocks"] = json.loads(text)
+        else:
+            out["source_code"] = text
+    except OSError:
+        out["file_missing"] = True
+    return out
+
+
+@strategy_api.get("")
+async def list_strategies():
+    return [_strategy_with_content(r) for r in db.get_all_strategies()]
+
+
+@strategy_api.post("")
+async def create_strategy(req: StrategyCreateRequest):
+    _validate_strategy_payload(req)
+    strategy_id = str(uuid.uuid4())[:8]
+    file_path = _write_strategy_file(strategy_id, req)
+    db.save_strategy({
+        "strategy_id": strategy_id, "name": req.name, "mode": req.mode,
+        "symbol": req.symbol.upper(), "timeframe": req.timeframe, "file_path": file_path,
+    })
+    return {"status": "created", "strategy_id": strategy_id}
+
+
+@strategy_api.get("/{strategy_id}")
+async def get_strategy(strategy_id: str):
+    row = db.get_strategy(strategy_id)
+    if not row:
+        raise HTTPException(404, f"Strategy {strategy_id} not found")
+    return _strategy_with_content(row)
+
+
+@strategy_api.put("/{strategy_id}")
+async def update_strategy(strategy_id: str, req: StrategyCreateRequest):
+    row = db.get_strategy(strategy_id)
+    if not row:
+        raise HTTPException(404, f"Strategy {strategy_id} not found")
+    _validate_strategy_payload(req)
+    file_path = _write_strategy_file(strategy_id, req)
+    db.save_strategy({
+        "strategy_id": strategy_id, "name": req.name, "mode": req.mode,
+        "symbol": req.symbol.upper(), "timeframe": req.timeframe, "file_path": file_path,
+        "assigned_bot_id": row["assigned_bot_id"],
+    })
+    if row["assigned_bot_id"]:  # hot-reload the bot running this strategy
+        await bot_engine.kill_bot_task(row["assigned_bot_id"])
+        await bot_engine.reload_and_synchronize()
+    return {"status": "updated", "strategy_id": strategy_id}
+
+
+@strategy_api.delete("/{strategy_id}")
+async def delete_strategy(strategy_id: str):
+    row = db.get_strategy(strategy_id)
+    if not row:
+        raise HTTPException(404, f"Strategy {strategy_id} not found")
+    if row["assigned_bot_id"]:
+        await bot_engine.kill_bot_task(row["assigned_bot_id"])
+        db.update_virtual_bot(row["assigned_bot_id"], {"strategy_name": None})
+    db.delete_strategy(strategy_id)
+    try:
+        from pathlib import Path
+        Path(row["file_path"]).unlink(missing_ok=True)
+    except OSError:
+        pass
+    return {"status": "deleted", "strategy_id": strategy_id}
+
+
+app.include_router(strategy_api)
 
 
 # ── WebSocket ─────────────────────────────────────────────────────────────────

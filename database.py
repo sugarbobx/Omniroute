@@ -1,6 +1,7 @@
 """
-database.py — OmniRoute v2.2
+database.py — OmniRoute v2.3
 Added: protection_json column on slaves, modify_log table
+v2.3: bot columns on masters, strategies + strategy_results tables
 """
 
 import json
@@ -109,8 +110,48 @@ def init_db():
 
             CREATE INDEX IF NOT EXISTS idx_slave_positions_lookup
                 ON slave_positions(account_id, magic_number, symbol);
+
+            CREATE TABLE IF NOT EXISTS strategies (
+                strategy_id     TEXT PRIMARY KEY,
+                name            TEXT NOT NULL,
+                mode            TEXT NOT NULL CHECK(mode IN ('visual', 'code')),
+                symbol          TEXT NOT NULL,
+                timeframe       TEXT NOT NULL,
+                file_path       TEXT NOT NULL,
+                assigned_bot_id TEXT,
+                created_at      TEXT DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY(assigned_bot_id) REFERENCES masters(master_id) ON DELETE SET NULL
+            );
+
+            CREATE TABLE IF NOT EXISTS strategy_results (
+                result_id        TEXT PRIMARY KEY,
+                strategy_id      TEXT NOT NULL,
+                bot_id           TEXT NOT NULL,
+                signal_direction TEXT,
+                executed_at      TEXT,
+                entry_price      REAL,
+                exit_price       REAL,
+                pnl              REAL,
+                mode             TEXT CHECK(mode IN ('forward_test', 'live')),
+                FOREIGN KEY(strategy_id) REFERENCES strategies(strategy_id) ON DELETE CASCADE
+            );
         """)
+        # SQLite has no ALTER TABLE ... ADD COLUMN IF NOT EXISTS — check pragma first
+        _ensure_column(conn, "masters", "is_virtual_bot", "INTEGER DEFAULT 0")
+        _ensure_column(conn, "masters", "bot_symbol", "TEXT")
+        _ensure_column(conn, "masters", "bot_timeframe", "TEXT DEFAULT 'M5'")
+        _ensure_column(conn, "masters", "base_volume", "REAL DEFAULT 0.1")
+        _ensure_column(conn, "masters", "strategy_name", "TEXT")
+        _ensure_column(conn, "masters", "forward_test", "INTEGER DEFAULT 0")
+        _ensure_column(conn, "masters", "bot_mode", "TEXT DEFAULT 'standalone'")
     logger.info(f"Database ready: {DB_PATH.resolve()}")
+
+
+def _ensure_column(conn, table: str, col: str, decl: str):
+    existing = [r[1] for r in conn.execute(f"PRAGMA table_info({table})")]
+    if col not in existing:
+        conn.execute(f"ALTER TABLE {table} ADD COLUMN {col} {decl}")
+        logger.info(f"Migration: added {table}.{col}")
 
 
 # ── Masters ──────────────────────────────────────────────────────────────────
@@ -313,3 +354,150 @@ def log_modify(account_id: str, ticket: int, symbol: str,
             VALUES (?,?,?,?,?,?,?,?,?,?)
         """, (account_id, ticket, symbol, old_sl, old_tp, new_sl, new_tp,
               int(success), error, datetime.utcnow().isoformat()))
+
+
+# ── Virtual bots (rows in masters with is_virtual_bot=1) ────────────────────
+
+_BOT_FIELDS = ("is_virtual_bot", "bot_symbol", "bot_timeframe", "base_volume",
+               "strategy_name", "forward_test", "bot_mode")
+
+
+def _row_to_bot(row) -> dict:
+    return {
+        "bot_id":        row["master_id"],
+        "label":         row["label"],
+        "magic_number":  row["magic_number"],
+        "enabled":       bool(row["enabled"]),
+        "symbol":        row["bot_symbol"],
+        "timeframe":     row["bot_timeframe"] or "M5",
+        "base_volume":   row["base_volume"] if row["base_volume"] is not None else 0.1,
+        "strategy_name": row["strategy_name"],
+        "forward_test":  bool(row["forward_test"]),
+        "mode":          row["bot_mode"] or "standalone",
+        "created_at":    row["created_at"],
+    }
+
+
+def get_all_virtual_bots() -> list[dict]:
+    with get_conn() as conn:
+        rows = conn.execute("SELECT * FROM masters WHERE is_virtual_bot=1").fetchall()
+    return [_row_to_bot(r) for r in rows]
+
+
+def get_virtual_bot(bot_id: str) -> Optional[dict]:
+    with get_conn() as conn:
+        row = conn.execute(
+            "SELECT * FROM masters WHERE master_id=? AND is_virtual_bot=1", (bot_id,)
+        ).fetchone()
+    return _row_to_bot(row) if row else None
+
+
+def save_virtual_bot(bot: dict):
+    """Insert a virtual bot as a masters row. Standard master columns get
+    placeholder values — a virtual bot has no real MT5 master terminal."""
+    with get_conn() as conn:
+        conn.execute("""
+            INSERT INTO masters
+              (master_id,label,login,password,server,terminal_path,magic_number,
+               symbol_map_json,enabled,created_at,
+               is_virtual_bot,bot_symbol,bot_timeframe,base_volume,strategy_name,forward_test,bot_mode)
+            VALUES (?,?,0,'','virtual','virtual',?,'{}',?,?,1,?,?,?,?,?,?)
+        """, (
+            bot["bot_id"], bot["label"], bot["magic_number"], int(bot.get("enabled", True)),
+            datetime.utcnow().isoformat(),
+            bot["symbol"], bot.get("timeframe", "M5"), bot.get("base_volume", 0.1),
+            bot.get("strategy_name"), int(bot.get("forward_test", False)),
+            bot.get("mode", "standalone"),
+        ))
+
+
+def update_virtual_bot(bot_id: str, updates: dict):
+    col_map = {
+        "label": "label", "magic_number": "magic_number", "enabled": "enabled",
+        "symbol": "bot_symbol", "timeframe": "bot_timeframe", "base_volume": "base_volume",
+        "strategy_name": "strategy_name", "forward_test": "forward_test", "mode": "bot_mode",
+    }
+    sets, vals = [], []
+    for key, col in col_map.items():
+        if key in updates:
+            v = updates[key]
+            if isinstance(v, bool):
+                v = int(v)
+            sets.append(f"{col}=?")
+            vals.append(v)
+    if not sets:
+        return
+    vals.append(bot_id)
+    with get_conn() as conn:
+        conn.execute(f"UPDATE masters SET {', '.join(sets)} WHERE master_id=? AND is_virtual_bot=1", vals)
+
+
+def delete_virtual_bot(bot_id: str):
+    with get_conn() as conn:
+        conn.execute("UPDATE strategies SET assigned_bot_id=NULL WHERE assigned_bot_id=?", (bot_id,))
+        conn.execute("DELETE FROM masters WHERE master_id=? AND is_virtual_bot=1", (bot_id,))
+
+
+# ── Strategies ───────────────────────────────────────────────────────────────
+
+def get_strategy(strategy_id: str) -> Optional[dict]:
+    with get_conn() as conn:
+        row = conn.execute("SELECT * FROM strategies WHERE strategy_id=?", (strategy_id,)).fetchone()
+    return dict(row) if row else None
+
+
+def get_all_strategies() -> list[dict]:
+    with get_conn() as conn:
+        rows = conn.execute("SELECT * FROM strategies ORDER BY created_at DESC").fetchall()
+    return [dict(r) for r in rows]
+
+
+def save_strategy(data: dict):
+    with get_conn() as conn:
+        conn.execute("""
+            INSERT OR REPLACE INTO strategies
+              (strategy_id,name,mode,symbol,timeframe,file_path,assigned_bot_id,created_at)
+            VALUES (?,?,?,?,?,?,?,COALESCE((SELECT created_at FROM strategies WHERE strategy_id=?),CURRENT_TIMESTAMP))
+        """, (data["strategy_id"], data["name"], data["mode"], data["symbol"],
+              data["timeframe"], data["file_path"], data.get("assigned_bot_id"),
+              data["strategy_id"]))
+
+
+def delete_strategy(strategy_id: str):
+    with get_conn() as conn:
+        conn.execute("DELETE FROM strategies WHERE strategy_id=?", (strategy_id,))
+
+
+def assign_strategy_to_bot(strategy_id: str, bot_id: Optional[str]):
+    with get_conn() as conn:
+        # one strategy per bot — unassign anything previously on this bot
+        if bot_id:
+            conn.execute("UPDATE strategies SET assigned_bot_id=NULL WHERE assigned_bot_id=?", (bot_id,))
+        conn.execute("UPDATE strategies SET assigned_bot_id=? WHERE strategy_id=?", (bot_id, strategy_id))
+
+
+def get_strategy_for_bot(bot_id: str) -> Optional[dict]:
+    with get_conn() as conn:
+        row = conn.execute("SELECT * FROM strategies WHERE assigned_bot_id=?", (bot_id,)).fetchone()
+    return dict(row) if row else None
+
+
+def log_strategy_result(data: dict):
+    with get_conn() as conn:
+        conn.execute("""
+            INSERT INTO strategy_results
+              (result_id,strategy_id,bot_id,signal_direction,executed_at,entry_price,exit_price,pnl,mode)
+            VALUES (?,?,?,?,?,?,?,?,?)
+        """, (data["result_id"], data["strategy_id"], data["bot_id"],
+              data.get("signal_direction"), data.get("executed_at", datetime.utcnow().isoformat()),
+              data.get("entry_price"), data.get("exit_price"), data.get("pnl"),
+              data.get("mode", "forward_test")))
+
+
+def get_strategy_results(bot_id: str, limit: int = 200) -> list[dict]:
+    with get_conn() as conn:
+        rows = conn.execute("""
+            SELECT * FROM strategy_results WHERE bot_id=?
+            ORDER BY executed_at DESC LIMIT ?
+        """, (bot_id, limit)).fetchall()
+    return [dict(r) for r in rows]

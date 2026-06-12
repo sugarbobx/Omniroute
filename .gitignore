@@ -1,0 +1,10 @@
+__pycache__/
+*.pyc
+*.log
+copybridge.db
+copybridge.db-*
+verify_shots/
+logs_tmp.json
+# user-created strategy files are runtime data, not source
+strategies/*
+!strategies/__init__.py
