@@ -188,6 +188,33 @@ def delete_master(master_id: str):
         conn.execute("DELETE FROM masters WHERE master_id=?", (master_id,))
 
 
+def update_master(master_id: str, data: dict):
+    col_map = {
+        "label": "label", "login": "login", "password": "password",
+        "server": "server", "terminal_path": "terminal_path",
+        "magic_number": "magic_number", "symbol_map": "symbol_map_json",
+        "enabled": "enabled",
+    }
+    sets, vals = [], []
+    for key, col in col_map.items():
+        if key in data:
+            v = data[key]
+            if key == "symbol_map":
+                v = json.dumps(v)
+            elif isinstance(v, bool):
+                v = int(v)
+            sets.append(f"{col}=?")
+            vals.append(v)
+    if not sets:
+        return
+    vals.append(master_id)
+    with get_conn() as conn:
+        conn.execute(
+            f"UPDATE masters SET {', '.join(sets)} WHERE master_id=? AND (is_virtual_bot IS NULL OR is_virtual_bot=0)",
+            vals,
+        )
+
+
 def _row_to_master(row) -> MasterAccount:
     return MasterAccount(
         master_id=row["master_id"], label=row["label"], login=row["login"],
@@ -257,6 +284,32 @@ def delete_slave(account_id: str):
     with get_conn() as conn:
         conn.execute("DELETE FROM slaves WHERE account_id=?", (account_id,))
         conn.execute("DELETE FROM slave_positions WHERE account_id=?", (account_id,))
+
+
+def update_slave(account_id: str, data: dict):
+    col_map = {
+        "label": "label", "login": "login", "password": "password",
+        "server": "server", "lot_sizing_mode": "lot_sizing_mode",
+        "fixed_lot": "fixed_lot", "multiplier": "multiplier",
+        "max_lot": "max_lot", "min_lot": "min_lot",
+        "max_open_trades": "max_open_trades", "symbol_map": "symbol_map_json",
+        "enabled": "enabled",
+    }
+    sets, vals = [], []
+    for key, col in col_map.items():
+        if key in data:
+            v = data[key]
+            if key == "symbol_map":
+                v = json.dumps(v)
+            elif isinstance(v, bool):
+                v = int(v)
+            sets.append(f"{col}=?")
+            vals.append(v)
+    if not sets:
+        return
+    vals.append(account_id)
+    with get_conn() as conn:
+        conn.execute(f"UPDATE slaves SET {', '.join(sets)} WHERE account_id=?", vals)
 
 
 def _row_to_slave(row) -> SlaveAccount:

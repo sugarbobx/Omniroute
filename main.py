@@ -197,16 +197,80 @@ async def add_account(req: AddAccountRequest):
 
 # ── Masters ───────────────────────────────────────────────────────────────────
 
+class UpdateMasterRequest(BaseModel):
+    label:         Optional[str]   = None
+    login:         Optional[int]   = None
+    password:      Optional[str]   = None
+    server:        Optional[str]   = None
+    terminal_path: Optional[str]   = None
+    magic_number:  Optional[int]   = None
+    symbol_map:    Optional[dict]  = None
+
+
+class UpdateSlaveRequest(BaseModel):
+    label:           Optional[str]   = None
+    login:           Optional[int]   = None
+    password:        Optional[str]   = None
+    server:          Optional[str]   = None
+    lot_sizing_mode: Optional[str]   = None
+    fixed_lot:       Optional[float] = None
+    multiplier:      Optional[float] = None
+    max_lot:         Optional[float] = None
+    min_lot:         Optional[float] = None
+    max_open_trades: Optional[int]   = None
+    symbol_map:      Optional[dict]  = None
+
+
 @app.get("/masters", tags=["Masters"])
 async def list_masters(): return router.get_master_statuses()
 
 @app.post("/masters", tags=["Masters"])
 async def add_master(account: MasterAccount): return await router.add_master(account)
 
+@app.get("/masters/{master_id}", tags=["Masters"])
+async def get_master(master_id: str):
+    if master_id not in router.masters:
+        raise HTTPException(404)
+    state = router.masters[master_id]
+    acc   = state.account
+    return {
+        "master_id":    acc.master_id,
+        "label":        acc.label,
+        "login":        acc.login,
+        "server":       acc.server,
+        "terminal_path": acc.terminal_path,
+        "magic_number": acc.magic_number,
+        "symbol_map":   acc.symbol_map,
+        "enabled":      acc.enabled,
+        "connection_status": state.status,
+    }
+
+@app.put("/masters/{master_id}", tags=["Masters"])
+async def update_master(master_id: str, req: UpdateMasterRequest):
+    if master_id not in router.masters:
+        raise HTTPException(404)
+    data = req.model_dump(exclude_none=True)
+    result = await router.update_master(master_id, data)
+    if result["status"] == "not_found":
+        raise HTTPException(404)
+    return result
+
 @app.delete("/masters/{master_id}", tags=["Masters"])
 async def remove_master(master_id: str):
     result = router.remove_master(master_id)
     if result["status"] == "not_found": raise HTTPException(404)
+    return result
+
+@app.post("/masters/{master_id}/ping", tags=["Masters"])
+async def ping_master(master_id: str):
+    result = await router.ping_master(master_id)
+    if result.get("status") == "not_found": raise HTTPException(404)
+    return result
+
+@app.post("/masters/{master_id}/reconnect", tags=["Masters"])
+async def reconnect_master(master_id: str):
+    result = await router.reconnect_master(master_id)
+    if result.get("status") == "not_found": raise HTTPException(404)
     return result
 
 
@@ -218,11 +282,55 @@ async def list_slaves(): return router.get_slave_statuses()
 @app.post("/slaves", tags=["Slaves"])
 async def add_slave(account: SlaveAccount): return await router.add_slave(account)
 
+@app.get("/slaves/{account_id}", tags=["Slaves"])
+async def get_slave(account_id: str):
+    if account_id not in router.slaves:
+        raise HTTPException(404)
+    state = router.slaves[account_id]
+    acc   = state.account
+    return {
+        "account_id":      acc.account_id,
+        "label":           acc.label,
+        "login":           acc.login,
+        "server":          acc.server,
+        "lot_sizing_mode": acc.lot_sizing_mode.value,
+        "fixed_lot":       acc.fixed_lot,
+        "multiplier":      acc.multiplier,
+        "max_lot":         acc.max_lot,
+        "min_lot":         acc.min_lot,
+        "max_open_trades": acc.max_open_trades,
+        "symbol_map":      acc.symbol_map,
+        "enabled":         acc.enabled,
+        "connection_status": state.status,
+    }
+
+@app.put("/slaves/{account_id}", tags=["Slaves"])
+async def update_slave(account_id: str, req: UpdateSlaveRequest):
+    if account_id not in router.slaves:
+        raise HTTPException(404)
+    data = req.model_dump(exclude_none=True)
+    result = await router.update_slave(account_id, data)
+    if result["status"] == "not_found":
+        raise HTTPException(404)
+    return result
+
 @app.delete("/slaves/{account_id}", tags=["Slaves"])
 async def remove_slave(account_id: str):
     result = router.remove_slave(account_id)
     if result["status"] == "not_found": raise HTTPException(404)
     return result
+
+@app.post("/slaves/{account_id}/reconnect", tags=["Slaves"])
+async def reconnect_slave(account_id: str):
+    result = await router.reconnect_slave(account_id)
+    if result.get("status") == "not_found": raise HTTPException(404)
+    return result
+
+@app.get("/slaves/{account_id}/provision_status", tags=["Slaves"])
+async def provision_status(account_id: str):
+    if account_id not in router.slaves:
+        raise HTTPException(404)
+    return router.get_provision_status(account_id)
 
 
 # ── Protection endpoints ──────────────────────────────────────────────────────
@@ -609,3 +717,10 @@ async def ws_status(ws: WebSocket):
 
 if __name__ == "__main__":
     uvicorn.run("main:app", host="0.0.0.0", port=8000, reload=False, workers=1)
+
+from fastapi.responses import FileResponse
+
+@app.get("/")
+def root():
+    return FileResponse("index.html")
+

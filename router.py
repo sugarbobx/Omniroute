@@ -1,19 +1,25 @@
 """
-router.py — OmniRoute v2.2
-Trade Protection wired in:
-  • Slippage gate before every order_send
-  • LotScaler applied on top of base volume
-  • SL/TP translated via SLTPCalculator on open
-  • SL/TP modify synced to all linked slaves via route_modify()
-  • DB position tracking for modify lookups
+router.py — OmniRoute v2.3
+Multi-terminal MT5 architecture:
+  • Each slave gets a dedicated MT5 terminal copy (auto-provisioned)
+  • asyncio.Lock serialises all MT5 ops (singleton IPC)
+  • Terminal switching via mt5.shutdown() + mt5.initialize(path=...)
+  • Fast switching: terminals already logged in to their broker servers
+  • All timeouts ≥ 180 s (FundedNext needs ~70 s on cold connect)
 """
 
 import asyncio
 import logging
+import shutil
+import subprocess
 import time
 from collections import deque
 from datetime import datetime, date
+from pathlib import Path
 from typing import Dict, Optional
+
+MT5_BASE_PATH  = Path(r"C:\Program Files\MetaTrader 5")
+MT5_SLAVES_DIR = Path(r"C:\MT5-Slaves")
 
 import database as db
 import notifier
@@ -82,10 +88,19 @@ class CopyRouter:
         self._blocked_today = 0
         self._today         = date.today()
         self._start_time    = time.time()
+        # Created in startup() to ensure we're inside the event loop
+        self._mt5_lock: Optional[asyncio.Lock] = None
+        self._primary_master: Optional[MasterAccount] = None
+        # Per-slave terminal management
+        self._slave_processes:      Dict[str, subprocess.Popen] = {}
+        self._slave_terminal_paths: Dict[str, str]              = {}
+        self._provision_status:     Dict[str, dict]             = {}
+        self._current_mt5_path:     Optional[str]               = None
 
     # ── Boot / shutdown ──────────────────────────────────────────────────────
 
     async def startup(self):
+        self._mt5_lock = asyncio.Lock()
         masters = db.load_all_masters()
         slaves  = db.load_all_slaves()
         for m in masters:
@@ -97,12 +112,24 @@ class CopyRouter:
         for s_id, s_state in self.slaves.items():
             s_state.account.master_ids = db.get_masters_for_slave(s_id)
         logger.info(f"Loaded {len(self.masters)} masters, {len(self.slaves)} slaves")
-        tasks = (
-            [self._connect_master(ms) for ms in self.masters.values()] +
-            [self._connect_slave(ss)  for ss in self.slaves.values()]
-        )
-        if tasks:
-            await asyncio.gather(*tasks, return_exceptions=True)
+
+        # Probe MT5 at startup (non-blocking, pathless — just log whether a terminal is up).
+        if MT5_AVAILABLE:
+            ok = mt5.initialize(timeout=10_000)
+            if ok:
+                logger.info("MT5 IPC available at startup")
+                mt5.shutdown()
+            else:
+                logger.info("No MT5 terminal running at startup — slaves will connect via provision_slave")
+
+        for ms in self.masters.values():
+            await self._connect_master(ms)
+
+        # Connect slaves as background tasks so the server starts immediately.
+        # UI polls /slaves/{id}/provision_status for live progress.
+        for ss in self.slaves.values():
+            asyncio.create_task(self.provision_slave(ss))
+
         notifier.notify_bridge_started(len(self.masters), len(self.slaves))
 
     async def shutdown(self):
@@ -132,6 +159,8 @@ class CopyRouter:
         db.delete_master(master_id)
         for s in self.slaves.values():
             s.account.master_ids = [m for m in s.account.master_ids if m != master_id]
+        if self._primary_master and self._primary_master.master_id == master_id:
+            self._primary_master = None
         return {"status": "removed", "master_id": master_id}
 
     async def add_slave(self, account: SlaveAccount) -> dict:
@@ -140,15 +169,18 @@ class CopyRouter:
         state = SlaveState(account)
         self.slaves[account.account_id] = state
         db.save_slave(account)
-        await self._connect_slave(state)
+        # Provision asynchronously so the HTTP response returns immediately;
+        # the caller can poll /slaves/{id} or /slaves/{id}/provision_status for progress.
+        asyncio.create_task(self.provision_slave(state))
         self._log_event("INFO", f"Slave added: {account.label}", account_id=account.account_id)
-        return {"status": "added", "account_id": account.account_id, "connected": state.status == ConnectionStatus.CONNECTED}
+        return {"status": "provisioning", "account_id": account.account_id}
 
     def remove_slave(self, account_id: str) -> dict:
         if account_id not in self.slaves:
             return {"status": "not_found"}
         self.slaves.pop(account_id)
         db.delete_slave(account_id)
+        self.deprovision_slave(account_id)
         return {"status": "removed", "account_id": account_id}
 
     def update_protection(self, account_id: str, protection: TradeProtection) -> dict:
@@ -158,6 +190,42 @@ class CopyRouter:
         db.update_slave_protection(account_id, protection)
         self._log_event("INFO", f"Protection updated: profile={protection.risk_profile_label}", account_id=account_id)
         return {"status": "updated", "account_id": account_id, "protection": protection.model_dump()}
+
+    async def update_master(self, master_id: str, data: dict) -> dict:
+        if master_id not in self.masters:
+            return {"status": "not_found"}
+        db.update_master(master_id, data)
+        state = self.masters[master_id]
+        acc = state.account
+        for k, v in data.items():
+            if k == "symbol_map" and hasattr(acc, "symbol_map"):
+                acc.symbol_map = v
+            elif hasattr(acc, k):
+                setattr(acc, k, v)
+        if "magic_number" in data:
+            # Reindex magic
+            old_magic = next((mn for mn, mid in self._magic_index.items() if mid == master_id), None)
+            if old_magic is not None:
+                self._magic_index.pop(old_magic, None)
+            self._magic_index[acc.magic_number] = master_id
+        await self._connect_master(state)
+        return {"status": "updated", "master_id": master_id}
+
+    async def update_slave(self, account_id: str, data: dict) -> dict:
+        if account_id not in self.slaves:
+            return {"status": "not_found"}
+        db.update_slave(account_id, data)
+        state = self.slaves[account_id]
+        acc = state.account
+        for k, v in data.items():
+            if k == "lot_sizing_mode":
+                acc.lot_sizing_mode = LotSizingMode(v)
+            elif k == "symbol_map" and hasattr(acc, "symbol_map"):
+                acc.symbol_map = v
+            elif hasattr(acc, k):
+                setattr(acc, k, v)
+        await self._connect_slave(state)
+        return {"status": "updated", "account_id": account_id}
 
     # ── Linking ───────────────────────────────────────────────────────────────
 
@@ -225,10 +293,6 @@ class CopyRouter:
             await asyncio.gather(*tasks, return_exceptions=True)
 
     async def route_modify(self, modify: ModifySignal):
-        """
-        SL/TP sync: propagate master modify to all linked slave positions.
-        Called by the new /trade-modify endpoint from the Master EA.
-        """
         master_id = self._magic_index.get(modify.magic_number)
         if not master_id:
             self._log_event("WARN", f"route_modify: no master for magic={modify.magic_number}")
@@ -249,111 +313,127 @@ class CopyRouter:
     async def _execute_on_slave(
         self, signal: TradeSignal, master_state: MasterState, slave_state: SlaveState, t0: float
     ) -> TradeResult:
-        acc          = slave_state.account
-        protection   = acc.protection
+        acc        = slave_state.account
+        protection = acc.protection
         slave_symbol = self._resolve_symbol(signal.symbol, master_state, slave_state)
-
-        # ── Step 1: Get current market price on slave ──────────────────────
-        current_price = self._get_current_price(slave_symbol, signal.type)
-        if current_price is None:
-            current_price = signal.price  # fallback to master price in sim mode
-
-        # ── Step 2: Slippage gate ──────────────────────────────────────────
-        slip_result = prot_engine.check_slippage(
-            master_price=signal.price,
-            current_price=current_price,
-            symbol=slave_symbol,
-            trade_type=signal.type,
-            protection=protection,
-        )
-        if not slip_result.passed:
-            self._blocked_today += 1
-            msg = f"🛡 SLIPPAGE BLOCKED [{acc.label}] {slave_symbol}: {slip_result.message}"
-            self._log_event("WARN", msg, master_id=master_state.account.master_id,
-                            account_id=acc.account_id, signal_id=signal.signal_id, symbol=slave_symbol)
-            notifier.notify_trade_failed(
-                master_label=master_state.account.label, slave_label=acc.label,
-                slave_id=acc.account_id, symbol=slave_symbol, trade_type=signal.type.value,
-                error_message=slip_result.message, error_code=None, signal_id=signal.signal_id,
-            )
-            return TradeResult(
-                account_id=acc.account_id, master_id=master_state.account.master_id,
-                signal_id=signal.signal_id, symbol=signal.symbol, slave_symbol=slave_symbol,
-                trade_type=signal.type.value, requested_volume=signal.volume, executed_volume=0.0,
-                price=signal.price, success=False,
-                error_message=slip_result.message,
-                slippage_checked=True, slippage_deviation=slip_result.deviation, slippage_blocked=True,
-                latency_ms=round((time.perf_counter() - t0) * 1000, 2),
-            )
-
-        # ── Step 3: Calculate base volume then apply risk multiplier ───────
-        base_volume  = self._calculate_volume(signal, master_state, slave_state)
-        volume       = prot_engine.scale_lot(base_volume, protection)
-
-        # ── Step 4: Calculate slave SL/TP ─────────────────────────────────
-        slave_sl, slave_tp = prot_engine.calculate_slave_sltp(
-            master_price=signal.price,
-            master_sl=signal.sl,
-            master_tp=signal.tp,
-            slave_price=current_price,
-            symbol=slave_symbol,
-            trade_type=signal.type,
-            protection=protection,
-        )
-        # If SL/TP sync disabled, pass through master values unchanged
-        if not protection.sltp_sync_enabled:
-            slave_sl = signal.sl
-            slave_tp = signal.tp
-
-        slippage = acc.slippage_override or signal.slippage
 
         result = TradeResult(
             account_id=acc.account_id, master_id=master_state.account.master_id,
             signal_id=signal.signal_id, symbol=signal.symbol, slave_symbol=slave_symbol,
             trade_type=signal.type.value, requested_volume=signal.volume,
-            executed_volume=volume, price=signal.price, success=False,
-            slippage_checked=True, slippage_deviation=slip_result.deviation, slippage_blocked=False,
-            lot_after_risk=volume, sl_synced=slave_sl, tp_synced=slave_tp,
+            executed_volume=0.0, price=signal.price, success=False,
+            slippage_checked=False, slippage_deviation=0.0, slippage_blocked=False,
             latency_ms=0,
         )
 
         try:
             if not MT5_AVAILABLE:
                 await asyncio.sleep(0.004)
-                result.success      = True
-                result.order_ticket = 100000 + int(time.time() * 1000) % 99999
-                result.price        = current_price
-                slave_state.open_tickets.add(result.order_ticket)
-                # Record position for future modify lookups
-                db.record_slave_position(
-                    acc.account_id, master_state.account.master_id, signal.magic_number,
-                    slave_symbol, result.order_ticket, current_price, signal.type.value,
+                current_price = signal.price
+
+                slip_result = prot_engine.check_slippage(
+                    master_price=signal.price, current_price=current_price,
+                    symbol=slave_symbol, trade_type=signal.type, protection=protection,
                 )
-            else:
-                order_type = self._map_order_type(signal.type)
-                req = {
-                    "action": mt5.TRADE_ACTION_DEAL, "symbol": slave_symbol,
-                    "volume": volume, "type": order_type, "price": current_price,
-                    "sl": slave_sl, "tp": slave_tp,
-                    "deviation": slippage, "magic": signal.magic_number,
-                    "comment": signal.comment,
-                    "type_time": mt5.ORDER_TIME_GTC, "type_filling": mt5.ORDER_FILLING_IOC,
-                }
-                r = mt5.order_send(req)
-                if r is None:
-                    result.error_message = f"order_send None: {mt5.last_error()}"
-                elif r.retcode == mt5.TRADE_RETCODE_DONE:
-                    result.success      = True
-                    result.order_ticket = r.order
-                    result.price        = r.price
-                    slave_state.open_tickets.add(r.order)
+                result.slippage_checked = True
+                result.slippage_deviation = slip_result.deviation
+
+                if not slip_result.passed:
+                    result.slippage_blocked = True
+                    result.error_message = slip_result.message
+                else:
+                    base_volume = self._calculate_volume(signal, master_state, slave_state)
+                    volume      = prot_engine.scale_lot(base_volume, protection)
+                    slave_sl, slave_tp = prot_engine.calculate_slave_sltp(
+                        master_price=signal.price, master_sl=signal.sl, master_tp=signal.tp,
+                        slave_price=current_price, symbol=slave_symbol,
+                        trade_type=signal.type, protection=protection,
+                    )
+                    if not protection.sltp_sync_enabled:
+                        slave_sl, slave_tp = signal.sl, signal.tp
+
+                    result.executed_volume = volume
+                    result.lot_after_risk  = volume
+                    result.sl_synced       = slave_sl
+                    result.tp_synced       = slave_tp
+                    result.success         = True
+                    result.order_ticket    = 100000 + int(time.time() * 1000) % 99999
+                    result.price           = current_price
+                    slave_state.open_tickets.add(result.order_ticket)
                     db.record_slave_position(
                         acc.account_id, master_state.account.master_id, signal.magic_number,
-                        slave_symbol, r.order, r.price, signal.type.value,
+                        slave_symbol, result.order_ticket, current_price, signal.type.value,
                     )
-                else:
-                    result.error_code    = r.retcode
-                    result.error_message = _decode_retcode(r.retcode)
+            else:
+                lock = self._mt5_lock or asyncio.Lock()
+                async with lock:
+                    if not self._ensure_slave_account(acc):
+                        result.error_message = f"MT5 account switch failed: {mt5.last_error()}"
+                        return result
+                    info = mt5.account_info()
+                    if info:
+                        slave_state.equity  = info.equity
+                        slave_state.balance = info.balance
+
+                    current_price = self._get_current_price(slave_symbol, signal.type) or signal.price
+
+                    slip_result = prot_engine.check_slippage(
+                        master_price=signal.price, current_price=current_price,
+                        symbol=slave_symbol, trade_type=signal.type, protection=protection,
+                    )
+                    result.slippage_checked  = True
+                    result.slippage_deviation = slip_result.deviation
+
+                    if not slip_result.passed:
+                        result.slippage_blocked = True
+                        result.error_message    = slip_result.message
+                    else:
+                        base_volume = self._calculate_volume(signal, master_state, slave_state)
+                        volume      = prot_engine.scale_lot(base_volume, protection)
+                        slave_sl, slave_tp = prot_engine.calculate_slave_sltp(
+                            master_price=signal.price, master_sl=signal.sl, master_tp=signal.tp,
+                            slave_price=current_price, symbol=slave_symbol,
+                            trade_type=signal.type, protection=protection,
+                        )
+                        if not protection.sltp_sync_enabled:
+                            slave_sl, slave_tp = signal.sl, signal.tp
+
+                        result.executed_volume = volume
+                        result.lot_after_risk  = volume
+                        result.sl_synced       = slave_sl
+                        result.tp_synced       = slave_tp
+
+                        slippage   = acc.slippage_override or signal.slippage
+                        order_type = self._map_order_type(signal.type)
+                        req = {
+                            "action":        mt5.TRADE_ACTION_DEAL,
+                            "symbol":        slave_symbol,
+                            "volume":        volume,
+                            "type":          order_type,
+                            "price":         current_price,
+                            "sl":            slave_sl,
+                            "tp":            slave_tp,
+                            "deviation":     slippage,
+                            "magic":         signal.magic_number,
+                            "comment":       signal.comment,
+                            "type_time":     mt5.ORDER_TIME_GTC,
+                            "type_filling":  mt5.ORDER_FILLING_IOC,
+                        }
+                        r = mt5.order_send(req)
+                        if r is None:
+                            result.error_message = f"order_send None: {mt5.last_error()}"
+                        elif r.retcode == mt5.TRADE_RETCODE_DONE:
+                            result.success      = True
+                            result.order_ticket = r.order
+                            result.price        = r.price
+                            slave_state.open_tickets.add(r.order)
+                            db.record_slave_position(
+                                acc.account_id, master_state.account.master_id, signal.magic_number,
+                                slave_symbol, r.order, r.price, signal.type.value,
+                            )
+                        else:
+                            result.error_code    = r.retcode
+                            result.error_message = _decode_retcode(r.retcode)
 
         except Exception as exc:
             result.error_message = str(exc)
@@ -363,13 +443,32 @@ class CopyRouter:
             result.latency_ms = ms
             self._latencies.append(ms)
 
-            if result.success:
+            sl  = result.sl_synced  or 0.0
+            tp  = result.tp_synced  or 0.0
+            vol = result.executed_volume or 0.0
+            dev = result.slippage_deviation or 0.0
+
+            if result.slippage_blocked:
+                self._blocked_today += 1
+                self._log_event(
+                    "WARN",
+                    f"🛡 SLIPPAGE BLOCKED [{acc.label}] {slave_symbol}: {result.error_message}",
+                    master_id=master_state.account.master_id,
+                    account_id=acc.account_id, signal_id=signal.signal_id, symbol=slave_symbol,
+                )
+                notifier.notify_trade_failed(
+                    master_label=master_state.account.label, slave_label=acc.label,
+                    slave_id=acc.account_id, symbol=slave_symbol, trade_type=signal.type.value,
+                    error_message=result.error_message or "Unknown", error_code=None,
+                    signal_id=signal.signal_id,
+                )
+            elif result.success:
                 self._copied_today += 1
                 self._log_event(
                     "INFO",
-                    f"✅ {signal.type.upper()} {volume}L {slave_symbol} @ {result.price:.5f} "
-                    f"SL={slave_sl:.5f} TP={slave_tp:.5f} "
-                    f"slip={slip_result.deviation:.1f}{protection.slippage_mode.value[0]} "
+                    f"✅ {signal.type.upper()} {vol}L {slave_symbol} @ {result.price:.5f} "
+                    f"SL={sl:.5f} TP={tp:.5f} "
+                    f"slip={dev:.1f}{protection.slippage_mode.value[0]} "
                     f"risk×{protection.risk_multiplier} [{ms:.0f}ms]",
                     master_id=master_state.account.master_id,
                     account_id=acc.account_id, signal_id=signal.signal_id,
@@ -378,7 +477,7 @@ class CopyRouter:
                 notifier.notify_trade_copied(
                     master_label=master_state.account.label, slave_label=acc.label,
                     slave_id=acc.account_id, symbol=slave_symbol,
-                    trade_type=signal.type.value, volume=volume, price=result.price,
+                    trade_type=signal.type.value, volume=vol, price=result.price,
                     ticket=result.order_ticket, latency_ms=ms, signal_id=signal.signal_id,
                 )
             else:
@@ -401,93 +500,113 @@ class CopyRouter:
     # ── SL/TP Modify ──────────────────────────────────────────────────────────
 
     async def _modify_sltp_on_slave(self, modify: ModifySignal, master_state: MasterState, slave_state: SlaveState):
-        acc       = slave_state.account
+        acc        = slave_state.account
         protection = acc.protection
         slave_symbol = self._resolve_symbol(modify.symbol, master_state, slave_state)
 
         if not protection.sltp_sync_enabled:
             return
 
-        # Fetch all open tickets for this magic+symbol on this slave
         tickets = db.get_slave_tickets(acc.account_id, modify.magic_number, slave_symbol)
         if not tickets:
             self._log_event("WARN", f"SL/TP modify: no tracked positions for {slave_symbol} magic={modify.magic_number}", account_id=acc.account_id)
             return
 
-        for pos_info in tickets:
-            ticket     = pos_info["ticket"]
-            open_price = pos_info["open_price"]
-            trade_type = TradeType(pos_info["trade_type"])
-
-            # Calculate translated SL/TP for this slave position
-            new_sl, new_tp = prot_engine.calculate_modify_sltp(
-                master_sl=modify.new_sl,
-                master_tp=modify.new_tp,
-                slave_entry=open_price,
-                master_entry=modify.master_price or open_price,
-                symbol=slave_symbol,
-                trade_type=trade_type,
-                protection=protection,
-            )
-
-            old_sl, old_tp = 0.0, 0.0  # We don't track current values in-memory
-
-            if not MT5_AVAILABLE:
+        if not MT5_AVAILABLE:
+            for pos_info in tickets:
+                ticket     = pos_info["ticket"]
+                open_price = pos_info["open_price"]
+                trade_type = TradeType(pos_info["trade_type"])
+                new_sl, new_tp = prot_engine.calculate_modify_sltp(
+                    master_sl=modify.new_sl, master_tp=modify.new_tp,
+                    slave_entry=open_price, master_entry=modify.master_price or open_price,
+                    symbol=slave_symbol, trade_type=trade_type, protection=protection,
+                )
                 logger.info(f"[SIM] Modify #{ticket} {slave_symbol}: SL={new_sl:.5f} TP={new_tp:.5f}")
-                db.log_modify(acc.account_id, ticket, slave_symbol, old_sl, old_tp, new_sl, new_tp, True)
+                db.log_modify(acc.account_id, ticket, slave_symbol, 0.0, 0.0, new_sl, new_tp, True)
                 self._log_event("INFO",
                     f"🔄 SL/TP synced #{ticket} {slave_symbol} SL={new_sl:.5f} TP={new_tp:.5f}",
                     master_id=master_state.account.master_id, account_id=acc.account_id)
-                continue
+            return
 
-            request = {
-                "action":   mt5.TRADE_ACTION_SLTP,
-                "symbol":   slave_symbol,
-                "sl":       new_sl,
-                "tp":       new_tp,
-                "position": ticket,
-            }
-            r = mt5.order_send(request)
-            if r and r.retcode == mt5.TRADE_RETCODE_DONE:
-                db.log_modify(acc.account_id, ticket, slave_symbol, old_sl, old_tp, new_sl, new_tp, True)
-                self._log_event("INFO",
-                    f"🔄 SL/TP synced #{ticket} {slave_symbol} SL={new_sl:.5f} TP={new_tp:.5f}",
-                    master_id=master_state.account.master_id, account_id=acc.account_id)
-            else:
-                err = _decode_retcode(r.retcode if r else -1)
-                db.log_modify(acc.account_id, ticket, slave_symbol, old_sl, old_tp, new_sl, new_tp, False, err)
-                self._log_event("ERROR",
-                    f"SL/TP modify failed #{ticket}: {err}",
-                    master_id=master_state.account.master_id, account_id=acc.account_id)
+        lock = self._mt5_lock or asyncio.Lock()
+        async with lock:
+            if not self._ensure_slave_account(acc):
+                self._log_event("ERROR", f"SL/TP modify: account switch failed", account_id=acc.account_id)
+                return
+            for pos_info in tickets:
+                ticket     = pos_info["ticket"]
+                open_price = pos_info["open_price"]
+                trade_type = TradeType(pos_info["trade_type"])
+
+                new_sl, new_tp = prot_engine.calculate_modify_sltp(
+                    master_sl=modify.new_sl, master_tp=modify.new_tp,
+                    slave_entry=open_price, master_entry=modify.master_price or open_price,
+                    symbol=slave_symbol, trade_type=trade_type, protection=protection,
+                )
+
+                request = {
+                    "action":   mt5.TRADE_ACTION_SLTP,
+                    "symbol":   slave_symbol,
+                    "sl":       new_sl,
+                    "tp":       new_tp,
+                    "position": ticket,
+                }
+                r = mt5.order_send(request)
+                if r and r.retcode == mt5.TRADE_RETCODE_DONE:
+                    db.log_modify(acc.account_id, ticket, slave_symbol, 0.0, 0.0, new_sl, new_tp, True)
+                    self._log_event("INFO",
+                        f"🔄 SL/TP synced #{ticket} {slave_symbol} SL={new_sl:.5f} TP={new_tp:.5f}",
+                        master_id=master_state.account.master_id, account_id=acc.account_id)
+                else:
+                    err = _decode_retcode(r.retcode if r else -1)
+                    db.log_modify(acc.account_id, ticket, slave_symbol, 0.0, 0.0, new_sl, new_tp, False, err)
+                    self._log_event("ERROR",
+                        f"SL/TP modify failed #{ticket}: {err}",
+                        master_id=master_state.account.master_id, account_id=acc.account_id)
 
     # ── Close ─────────────────────────────────────────────────────────────────
 
     async def _close_on_slave(self, magic_number: int, symbol: str, master_state: MasterState, state: SlaveState):
         slave_symbol = self._resolve_symbol(symbol, master_state, state)
+
         if not MT5_AVAILABLE:
             tickets = db.get_slave_tickets(state.account.account_id, magic_number, slave_symbol)
             for t in tickets:
                 db.remove_slave_position(state.account.account_id, t["ticket"])
             self._log_event("INFO", f"[SIM] Close {slave_symbol} magic={magic_number}", account_id=state.account.account_id)
             return
-        positions = mt5.positions_get(symbol=slave_symbol) or []
-        for pos in positions:
-            if pos.magic != magic_number:
-                continue
-            close_type = mt5.ORDER_TYPE_SELL if pos.type == mt5.ORDER_TYPE_BUY else mt5.ORDER_TYPE_BUY
-            tick = mt5.symbol_info_tick(slave_symbol)
-            req = {
-                "action": mt5.TRADE_ACTION_DEAL, "symbol": slave_symbol, "volume": pos.volume,
-                "type": close_type, "position": pos.ticket,
-                "price": tick.bid if pos.type == mt5.ORDER_TYPE_BUY else tick.ask,
-                "deviation": 10, "magic": magic_number, "comment": "OmniClose",
-                "type_time": mt5.ORDER_TIME_GTC, "type_filling": mt5.ORDER_FILLING_IOC,
-            }
-            r = mt5.order_send(req)
-            if r and r.retcode == mt5.TRADE_RETCODE_DONE:
-                state.open_tickets.discard(pos.ticket)
-                db.remove_slave_position(state.account.account_id, pos.ticket)
-                self._log_event("INFO", f"Closed #{pos.ticket}", account_id=state.account.account_id)
+
+        acc  = state.account
+        lock = self._mt5_lock or asyncio.Lock()
+        async with lock:
+            if not self._ensure_slave_account(acc):
+                self._log_event("ERROR", f"Close: account switch failed", account_id=acc.account_id)
+                return
+            positions = mt5.positions_get(symbol=slave_symbol) or []
+            for pos in positions:
+                if pos.magic != magic_number:
+                    continue
+                close_type = mt5.ORDER_TYPE_SELL if pos.type == mt5.ORDER_TYPE_BUY else mt5.ORDER_TYPE_BUY
+                tick = mt5.symbol_info_tick(slave_symbol)
+                req = {
+                    "action":       mt5.TRADE_ACTION_DEAL,
+                    "symbol":       slave_symbol,
+                    "volume":       pos.volume,
+                    "type":         close_type,
+                    "position":     pos.ticket,
+                    "price":        tick.bid if pos.type == mt5.ORDER_TYPE_BUY else tick.ask,
+                    "deviation":    10,
+                    "magic":        magic_number,
+                    "comment":      "OmniClose",
+                    "type_time":    mt5.ORDER_TIME_GTC,
+                    "type_filling": mt5.ORDER_FILLING_IOC,
+                }
+                r = mt5.order_send(req)
+                if r and r.retcode == mt5.TRADE_RETCODE_DONE:
+                    state.open_tickets.discard(pos.ticket)
+                    db.remove_slave_position(acc.account_id, pos.ticket)
+                    self._log_event("INFO", f"Closed #{pos.ticket}", account_id=acc.account_id)
 
     # ── Terminal connections ──────────────────────────────────────────────────
 
@@ -495,51 +614,201 @@ class CopyRouter:
         acc = state.account
         if not acc.enabled:
             state.status = ConnectionStatus.DISCONNECTED; return
-        if not MT5_AVAILABLE:
+        if not MT5_AVAILABLE or acc.terminal_path == "virtual":
             state.status = ConnectionStatus.CONNECTED
             state.equity = 50_000.0; state.balance = 50_000.0
             state.last_ping = datetime.utcnow()
             notifier.notify_master_connected(acc.label, acc.magic_number, acc.server, state.equity)
             return
-        try:
-            ok = mt5.initialize(path=acc.terminal_path, login=acc.login, password=acc.password, server=acc.server, timeout=10_000)
-            if not ok:
-                state.status = ConnectionStatus.ERROR
-                state.error  = f"MT5 init failed: {mt5.last_error()}"
-                notifier.notify_master_error(acc.label, acc.magic_number, state.error)
-                return
-            info = mt5.account_info()
-            if info: state.equity, state.balance = info.equity, info.balance
-            state.status = ConnectionStatus.CONNECTED; state.last_ping = datetime.utcnow()
-            notifier.notify_master_connected(acc.label, acc.magic_number, acc.server, state.equity)
-        except Exception as e:
-            state.status = ConnectionStatus.ERROR; state.error = str(e)
-            notifier.notify_master_error(acc.label, acc.magic_number, str(e))
+        # Real master: mark connected without switching the terminal to the master broker.
+        # The terminal stays logged into the slave account for Python trade execution.
+        # Master equity is updated from each trade signal's master_equity field.
+        state.status = ConnectionStatus.CONNECTED
+        state.last_ping = datetime.utcnow()
+        self._primary_master = acc
+        notifier.notify_master_connected(acc.label, acc.magic_number, acc.server, state.equity)
 
     async def _connect_slave(self, state: SlaveState):
-        acc = state.account
-        if not acc.enabled:
-            state.status = ConnectionStatus.DISCONNECTED; return
-        if not MT5_AVAILABLE:
-            state.status = ConnectionStatus.CONNECTED
-            state.equity = 10_000.0; state.balance = 10_000.0
-            state.last_ping = datetime.utcnow()
-            notifier.notify_slave_connected(acc.label, acc.account_id, acc.server, state.equity)
+        """Thin wrapper — delegates entirely to provision_slave()."""
+        if not state.account.enabled:
+            state.status = ConnectionStatus.DISCONNECTED
             return
+        await self.provision_slave(state)
+
+    # ── Terminal provisioning ─────────────────────────────────────────────────
+
+    async def provision_slave(self, state: SlaveState) -> dict:
+        """
+        Connect slave to MT5.  Runs all blocking MT5 calls in a thread executor so
+        the event loop stays responsive during the ~70–250 s cross-broker server switch.
+
+        mt5.login() has no timeout parameter; after it returns (even with IPC timeout),
+        we re-initialize IPC and verify account_info() — the terminal often completes
+        the server switch even when the IPC response is lost.
+        """
+        acc = state.account
+        aid = acc.account_id
+        loop = asyncio.get_event_loop()
+
+        def _set(step, msg):
+            self._provision_status[aid] = {"step": step, "message": msg, "done": False, "error": None}
+
         try:
-            ok = mt5.initialize(path=acc.terminal_path, login=acc.login, password=acc.password, server=acc.server, timeout=10_000)
-            if not ok:
-                state.status = ConnectionStatus.ERROR
-                state.error  = f"MT5 init failed: {mt5.last_error()}"
-                notifier.notify_slave_error(acc.label, acc.account_id, state.error)
-                return
+            _set(3, "Connecting to MT5…")
+
+            if not MT5_AVAILABLE:
+                state.equity, state.balance = 10_000.0, 10_000.0
+                state.status    = ConnectionStatus.CONNECTED
+                state.last_ping = datetime.utcnow()
+                self._provision_status[aid] = {"step": 5, "message": "Connected (simulation)", "done": True, "error": None}
+                notifier.notify_slave_connected(acc.label, aid, acc.server, state.equity)
+                return {"status": "connected", "equity": state.equity}
+
+            lock = self._mt5_lock or asyncio.Lock()
+            async with lock:
+                # Step 3 — connect MT5 IPC.
+                # NOTE: mt5.initialize(path=...) does not work on this setup;
+                # always use pathless initialize() which connects to any running terminal.
+                _set(3, "Connecting to MT5 IPC…")
+                if not mt5.terminal_info():
+                    ok = await loop.run_in_executor(None, lambda: mt5.initialize(timeout=60_000))
+                    if not ok:
+                        raise RuntimeError(
+                            f"MT5 IPC unavailable: {mt5.last_error()}. "
+                            "Ensure MetaTrader 5 is open and logged in."
+                        )
+
+                # Already on the right account — nothing to do.
+                info = mt5.account_info()
+                if info and info.login == acc.login:
+                    state.equity, state.balance = info.equity, info.balance
+                    state.status    = ConnectionStatus.CONNECTED
+                    state.last_ping = datetime.utcnow()
+                    self._provision_status[aid] = {"step": 5, "message": "Connected", "done": True, "error": None}
+                    notifier.notify_slave_connected(acc.label, aid, acc.server, state.equity)
+                    return {"status": "connected", "equity": state.equity}
+
+                # Step 4 — switch account.
+                # If the terminal is currently on a different broker we need mt5.login().
+                # This blocks (no timeout param) and can take ~70–250 s for a server switch;
+                # run in a thread so the event loop stays responsive.
+                _set(4, "Logging in to broker (may take several minutes on first connect)…")
+                await loop.run_in_executor(
+                    None,
+                    lambda: mt5.login(acc.login, password=acc.password, server=acc.server),
+                )
+
+                # After login (or IPC timeout), re-initialize and verify.
+                # The terminal may have completed the switch even if IPC response was lost.
+                _set(4, "Verifying connection…")
+                if not mt5.terminal_info():
+                    await loop.run_in_executor(None, lambda: mt5.initialize(timeout=60_000))
+
+                info = mt5.account_info()
+                if not info or info.login != acc.login:
+                    raise RuntimeError(
+                        f"MT5 login failed: {mt5.last_error()}. "
+                        "Please open the slave MT5 terminal and manually login to "
+                        f"{acc.server} (account {acc.login}), then click Reconnect."
+                    )
+
+                state.equity, state.balance = info.equity, info.balance
+
+            state.status    = ConnectionStatus.CONNECTED
+            state.last_ping = datetime.utcnow()
+            self._provision_status[aid] = {"step": 5, "message": "Connected", "done": True, "error": None}
+            notifier.notify_slave_connected(acc.label, aid, acc.server, state.equity)
+            return {"status": "connected", "equity": state.equity}
+
+        except Exception as exc:
+            err = str(exc)
+            logger.error(f"provision_slave [{acc.label}]: {err}")
+            state.status = ConnectionStatus.ERROR
+            state.error  = err
+            self._provision_status[aid] = {"step": 0, "message": err, "done": False, "error": err}
+            notifier.notify_slave_error(acc.label, aid, err)
+            return {"status": "error", "error": err}
+
+    def deprovision_slave(self, account_id: str):
+        """Clean up in-memory state for a removed slave."""
+        self._slave_processes.pop(account_id, None)
+        self._slave_terminal_paths.pop(account_id, None)
+        self._provision_status.pop(account_id, None)
+
+    def get_provision_status(self, account_id: str) -> dict:
+        return self._provision_status.get(account_id, {"step": 0, "message": "Unknown", "done": False, "error": None})
+
+    # ── Terminal / account management (MT5 is a process-wide singleton) ─────────
+
+    def _ensure_slave_account(self, acc) -> bool:
+        """
+        Guarantee MT5 is connected to this slave's account. Caller must hold _mt5_lock.
+        Uses pathless mt5.initialize() (path-based init doesn't work on this host).
+        """
+        try:
             info = mt5.account_info()
-            if info: state.equity, state.balance = info.equity, info.balance
-            state.status = ConnectionStatus.CONNECTED; state.last_ping = datetime.utcnow()
-            notifier.notify_slave_connected(acc.label, acc.account_id, acc.server, state.equity)
-        except Exception as e:
-            state.status = ConnectionStatus.ERROR; state.error = str(e)
-            notifier.notify_slave_error(acc.label, acc.account_id, str(e))
+            if info and info.login == acc.login:
+                return True
+        except Exception:
+            pass
+        if not mt5.terminal_info():
+            if not mt5.initialize(timeout=60_000):
+                return False
+        info = mt5.account_info()
+        if info and info.login == acc.login:
+            return True
+        # Account switch — may block for up to ~100 s; caller runs this in a thread executor
+        # via provision_slave() for any blocking scenario.
+        return bool(mt5.login(acc.login, password=acc.password, server=acc.server))
+
+    def _switch_terminal(self, terminal_path: str) -> bool:
+        """Switch MT5 IPC connection to a specific terminal. Caller must hold _mt5_lock."""
+        if self._current_mt5_path == terminal_path and MT5_AVAILABLE and mt5.terminal_info():
+            return True
+        if MT5_AVAILABLE:
+            mt5.shutdown()
+            ok = mt5.initialize(path=terminal_path, timeout=180_000)
+            if ok:
+                self._current_mt5_path = terminal_path
+            return ok
+        return False
+
+    # ── Ping / Reconnect ──────────────────────────────────────────────────────
+
+    async def ping_master(self, master_id: str) -> dict:
+        if master_id not in self.masters:
+            return {"status": "not_found"}
+        state = self.masters[master_id]
+        state.last_ping = datetime.utcnow()
+        return {
+            "status": state.status.value,
+            "equity": state.equity,
+            "last_ping": state.last_ping.isoformat(),
+        }
+
+    async def reconnect_master(self, master_id: str) -> dict:
+        if master_id not in self.masters:
+            return {"status": "not_found"}
+        state = self.masters[master_id]
+        state.status = ConnectionStatus.PENDING
+        state.error  = None
+        await self._connect_master(state)
+        return {"status": state.status.value, "master_id": master_id}
+
+    async def reconnect_slave(self, account_id: str) -> dict:
+        if account_id not in self.slaves:
+            return {"status": "not_found"}
+        state = self.slaves[account_id]
+        state.status = ConnectionStatus.PENDING
+        state.error  = None
+        # Use provision_slave so a dedicated terminal is (re)created if needed
+        asyncio.create_task(self.provision_slave(state))
+        return {"status": "provisioning", "account_id": account_id}
+
+    # ── (legacy stub, not called) ─────────────────────────────────────────────
+
+    def _restore_master_login(self):
+        pass
 
     # ── Helpers ───────────────────────────────────────────────────────────────
 

@@ -496,32 +496,6 @@ select.fi option{background:var(--bg2);}
 <!-- ═══ SIDEBAR ════════════════════════════════════════════════════════ -->
 <aside class="sidebar">
 
-  <!-- SETUP GUIDE (collapsible) -->
-  <div class="sb-section">
-    <div class="sb-head" onclick="toggleSB('guide')">
-      <span class="sb-title">⚡ Quick Setup</span>
-      <span id="guide-arrow" style="color:var(--text3);font-size:11px">▾</span>
-    </div>
-    <div class="sb-body" id="guide-body">
-      <div class="setup-guide">
-        <div class="setup-guide-title">🔵 Why "Failed to Fetch"?</div>
-        <div style="font-family:var(--mono);font-size:10px;color:var(--text2);margin-bottom:10px;line-height:1.6;">
-          The dashboard needs the Python bridge server running. Start it first:
-        </div>
-        <div class="setup-step"><span class="setup-num">1</span><span class="setup-text">On your VPS: <span class="setup-code">pip install -r requirements.txt</span></span></div>
-        <div class="setup-step"><span class="setup-num">2</span><span class="setup-text">Run: <span class="setup-code">python bridge/main.py</span></span></div>
-        <div class="setup-step"><span class="setup-num">3</span><span class="setup-text">Enter the VPS IP below, e.g. <span class="setup-code">http://192.168.1.10:8000</span></span></div>
-        <div class="setup-step"><span class="setup-num">4</span><span class="setup-text">Click <strong>Connect</strong> → red light turns blue ✓</span></div>
-      </div>
-      <div class="setup-guide" style="margin-bottom:0;background:rgba(255,173,13,.04);border-color:rgba(255,173,13,.15);">
-        <div class="setup-guide-title" style="color:var(--amber);">🔑 API Key Setup</div>
-        <div style="font-family:var(--mono);font-size:10px;color:var(--text2);line-height:1.6;">
-          In your <span class="setup-code">.env</span> file set <span class="setup-code">API_SECRET=yourkey</span>, then paste the same key in the field below. All requests will send it as <span class="setup-code">X-API-Key</span> header.
-        </div>
-      </div>
-    </div>
-  </div>
-
   <!-- BRIDGE CONFIG -->
   <div class="sb-section">
     <div class="sb-head" onclick="toggleSB('cfg')">
@@ -1228,6 +1202,76 @@ select.fi option{background:var(--bg2);}
   </div>
 </div>
 
+<!-- EDIT MASTER MODAL -->
+<div class="modal-backdrop hidden" id="edit-master-modal">
+  <div class="modal">
+    <div class="modal-header">
+      <span class="modal-title">Edit Master Account</span>
+      <button class="modal-close" onclick="closeModal('edit-master-modal')" aria-label="Close">✕</button>
+    </div>
+    <div class="modal-body">
+      <input type="hidden" id="em-id"/>
+      <div class="fg"><label class="fl" for="em-label">Label</label><input class="fi" id="em-label" placeholder="Master 1"/></div>
+      <div class="frow">
+        <div class="fg"><label class="fl" for="em-login">MT5 Login</label><input class="fi" id="em-login" type="number" placeholder="12345678"/></div>
+        <div class="fg"><label class="fl" for="em-server">Server</label><input class="fi" id="em-server" placeholder="Broker-Demo"/></div>
+      </div>
+      <div class="fg"><label class="fl" for="em-password">Password</label>
+        <div class="pw-wrap"><input class="fi" id="em-password" type="password" placeholder="leave blank to keep current"/>
+        <button type="button" class="pw-toggle" onclick="togglePw('em-password',this)" aria-label="Show password">👁</button></div>
+      </div>
+      <div class="fg"><label class="fl" for="em-magic">Magic Number</label><input class="fi" id="em-magic" type="number" placeholder="100001"/></div>
+      <div class="fg"><label class="fl" for="em-path">Terminal Path</label><input class="fi" id="em-path" placeholder="C:\Program Files\MetaTrader 5\terminal64.exe"/></div>
+    </div>
+    <div class="modal-footer">
+      <button class="btn btn-ghost btn-sm" onclick="closeModal('edit-master-modal')">Cancel</button>
+      <button class="btn btn-primary btn-sm" onclick="saveEditMaster()">Save Changes</button>
+    </div>
+  </div>
+</div>
+
+<!-- EDIT SLAVE MODAL -->
+<div class="modal-backdrop hidden" id="edit-slave-modal">
+  <div class="modal">
+    <div class="modal-header">
+      <span class="modal-title">Edit Slave Account</span>
+      <button class="modal-close" onclick="closeModal('edit-slave-modal')" aria-label="Close">✕</button>
+    </div>
+    <div class="modal-body">
+      <input type="hidden" id="es-id"/>
+      <div class="fg"><label class="fl" for="es-label">Label</label><input class="fi" id="es-label" placeholder="Slave 1"/></div>
+      <div class="frow">
+        <div class="fg"><label class="fl" for="es-login">MT5 Login</label><input class="fi" id="es-login" type="number" placeholder="12345678"/></div>
+        <div class="fg"><label class="fl" for="es-server">Server</label><input class="fi" id="es-server" placeholder="Broker-Live"/></div>
+      </div>
+      <div class="fg"><label class="fl" for="es-password">Password</label>
+        <div class="pw-wrap"><input class="fi" id="es-password" type="password" placeholder="leave blank to keep current"/>
+        <button type="button" class="pw-toggle" onclick="togglePw('es-password',this)" aria-label="Show password">👁</button></div>
+      </div>
+      <div class="fg"><label class="fl" for="es-lot-mode">Lot Sizing Mode</label>
+        <select class="fi" id="es-lot-mode">
+          <option value="equity_ratio">Equity Ratio</option>
+          <option value="fixed">Fixed</option>
+          <option value="multiplier">Multiplier</option>
+        </select>
+      </div>
+      <div class="frow">
+        <div class="fg"><label class="fl" for="es-fixed-lot">Fixed Lot</label><input class="fi" id="es-fixed-lot" type="number" step="0.01" min="0.01" placeholder="0.01"/></div>
+        <div class="fg"><label class="fl" for="es-multiplier">Multiplier</label><input class="fi" id="es-multiplier" type="number" step="0.01" min="0.01" placeholder="1.0"/></div>
+      </div>
+      <div class="frow">
+        <div class="fg"><label class="fl" for="es-max-lot">Max Lot</label><input class="fi" id="es-max-lot" type="number" step="0.01" min="0.01" placeholder="10.0"/></div>
+        <div class="fg"><label class="fl" for="es-min-lot">Min Lot</label><input class="fi" id="es-min-lot" type="number" step="0.01" min="0.01" placeholder="0.01"/></div>
+      </div>
+      <div class="fg"><label class="fl" for="es-max-trades">Max Open Trades</label><input class="fi" id="es-max-trades" type="number" min="1" placeholder="20"/></div>
+    </div>
+    <div class="modal-footer">
+      <button class="btn btn-ghost btn-sm" onclick="closeModal('edit-slave-modal')">Cancel</button>
+      <button class="btn btn-primary btn-sm" onclick="saveEditSlave()">Save Changes</button>
+    </div>
+  </div>
+</div>
+
 <div id="bar-tooltip" class="bar-tooltip"></div>
 <div id="toasts"></div>
 
@@ -1631,12 +1675,17 @@ function renderMasters(){
           <span class="dot ${dotCls}" style="margin-top:4px;"></span>
           <div>
             <div class="mc-label">${esc(m.label)}</div>
-            <div class="mc-meta">${err?`<span style="color:var(--red)">${esc(m.error||'Connection error')}</span>`:m.last_ping?'Ping '+relTime(m.last_ping):'Pending connection'}</div>
+            <div class="mc-meta" style="display:flex;align-items:center;gap:6px;">
+              ${err?`<span style="color:var(--red)">${esc(m.error||'Connection error')}</span>`:m.last_ping?'Ping '+relTime(m.last_ping):'Pending connection'}
+              <button class="btn btn-ghost btn-xs" id="ping-btn-${m.master_id}" onclick="pingMaster('${m.master_id}',this)" title="Test MT5 connection">Ping</button>
+            </div>
           </div>
         </div>
         <div style="display:flex;align-items:center;gap:7px;flex-shrink:0;">
           <span class="mc-magic">magic:${m.magic_number}</span>
           <button class="copy-btn" onclick="copyToClipboard('${m.magic_number}','Magic number')" title="Copy magic number">⎘</button>
+          <button class="btn btn-ghost btn-xs" onclick="openEditMaster('${m.master_id}')">Edit</button>
+          <button class="btn btn-ghost btn-xs" id="recon-m-${m.master_id}" onclick="reconnectMaster('${m.master_id}',this)">Reconnect</button>
           <button class="btn btn-danger btn-xs" onclick="removeMaster('${m.master_id}','${esc(m.label)}')">Remove</button>
         </div>
       </div>
@@ -1688,7 +1737,11 @@ function renderSlaves(){
         ${s.open_trades?`<div style="font-family:var(--mono);font-size:9px;color:var(--text2);margin-top:2px;">${s.open_trades} open</div>`:''}
         ${err?`<div style="font-family:var(--mono);font-size:9px;color:var(--red);margin-top:2px;">${esc(s.error||'Error')}</div>`:''}
       </div>
-      <button class="btn btn-danger btn-xs" onclick="removeSlave('${s.account_id}','${esc(s.label)}')">✕</button>
+      <div style="display:flex;gap:4px;align-items:center;flex-wrap:wrap;">
+        <button class="btn btn-ghost btn-xs" onclick="openEditSlave('${s.account_id}')">Edit</button>
+        <button class="btn btn-ghost btn-xs" id="recon-s-${s.account_id}" onclick="reconnectSlave('${s.account_id}',this)">Reconnect</button>
+        <button class="btn btn-danger btn-xs" onclick="removeSlave('${s.account_id}','${esc(s.label)}')">✕</button>
+      </div>
     </div>`;
   }).join('');
 }
@@ -1813,11 +1866,40 @@ async function addAccount(){
   }
   const btn = document.getElementById('add-account-btn');
   await withBtn(btn, 'Adding…', async () => {
-    await apiFetch('/account','POST',payload);
-    toast(`${currentRole==='master'?'Master':'Slave'} "${label}" added ✓`,'success');
+    const result = await apiFetch('/account','POST',payload);
     ['f-label','f-login','f-pass','f-server','f-path','f-magic','f-maxlot','f-mult'].forEach(id=>{ const e=document.getElementById(id); if(e) e.value=''; });
     await refreshAll();
+    if(currentRole==='slave' && result.account_id){
+      toast(`Slave "${label}" added — provisioning MT5 terminal…`,'info');
+      pollProvisionStatus(result.account_id, label);
+    } else {
+      toast(`${currentRole==='master'?'Master':'Slave'} "${label}" added ✓`,'success');
+    }
   });
+}
+
+function pollProvisionStatus(account_id, label){
+  let polls = 0;
+  const maxPolls = 40; // 40 × 5s = 200s
+  const iv = setInterval(async()=>{
+    polls++;
+    try{
+      const st = await apiFetch(`/slaves/${account_id}/provision_status`);
+      toast(`[${label}] ${st.message||'Provisioning…'}`,'info');
+      if(st.done){
+        clearInterval(iv);
+        toast(`Slave "${label}" connected ✓`,'success');
+        await refreshAll();
+      } else if(st.error){
+        clearInterval(iv);
+        toast(`Provisioning failed: ${st.error}`,'error');
+        await refreshAll();
+      } else if(polls>=maxPolls){
+        clearInterval(iv);
+        toast(`Provisioning timed out for "${label}"`,'error');
+      }
+    }catch(e){ clearInterval(iv); }
+  }, 5000);
 }
 
 // ══════════════════════════════════════════════════════════════════════
@@ -3023,6 +3105,141 @@ async function viewResults(botId, label){
   }catch(e){
     body.innerHTML=`<div style="color:var(--red);font-family:var(--mono);font-size:11px;">${esc(e.message)}</div>`;
   }
+}
+
+// ══════════════════════════════════════════════════════════════════════
+// EDIT MASTER
+// ══════════════════════════════════════════════════════════════════════
+async function openEditMaster(id){
+  try{
+    const data=await apiFetch(`/masters/${id}`);
+    document.getElementById('em-id').value=id;
+    document.getElementById('em-label').value=data.label||'';
+    document.getElementById('em-login').value=data.login||'';
+    document.getElementById('em-server').value=data.server||'';
+    document.getElementById('em-password').value='';
+    document.getElementById('em-magic').value=data.magic_number||'';
+    document.getElementById('em-path').value=data.terminal_path||'';
+    openModal('edit-master-modal');
+  }catch(e){toast('Failed to load master details','error');}
+}
+
+async function saveEditMaster(){
+  const id=document.getElementById('em-id').value;
+  const payload={};
+  const label=document.getElementById('em-label').value.trim();
+  const login=document.getElementById('em-login').value;
+  const server=document.getElementById('em-server').value.trim();
+  const password=document.getElementById('em-password').value;
+  const magic=document.getElementById('em-magic').value;
+  const path=document.getElementById('em-path').value.trim();
+  if(label) payload.label=label;
+  if(login) payload.login=parseInt(login);
+  if(server) payload.server=server;
+  if(password) payload.password=password;
+  if(magic) payload.magic_number=parseInt(magic);
+  if(path) payload.terminal_path=path;
+  try{
+    await apiFetch(`/masters/${id}`,'PUT',payload);
+    closeModal('edit-master-modal');
+    toast('Master updated','success');
+    await refreshAll();
+  }catch(e){toast(e.message||'Update failed','error');}
+}
+
+// ══════════════════════════════════════════════════════════════════════
+// EDIT SLAVE
+// ══════════════════════════════════════════════════════════════════════
+async function openEditSlave(id){
+  try{
+    const data=await apiFetch(`/slaves/${id}`);
+    document.getElementById('es-id').value=id;
+    document.getElementById('es-label').value=data.label||'';
+    document.getElementById('es-login').value=data.login||'';
+    document.getElementById('es-server').value=data.server||'';
+    document.getElementById('es-password').value='';
+    document.getElementById('es-lot-mode').value=data.lot_sizing_mode||'equity_ratio';
+    document.getElementById('es-fixed-lot').value=data.fixed_lot??'';
+    document.getElementById('es-multiplier').value=data.multiplier??'';
+    document.getElementById('es-max-lot').value=data.max_lot??'';
+    document.getElementById('es-min-lot').value=data.min_lot??'';
+    document.getElementById('es-max-trades').value=data.max_open_trades??'';
+    openModal('edit-slave-modal');
+  }catch(e){toast('Failed to load slave details','error');}
+}
+
+async function saveEditSlave(){
+  const id=document.getElementById('es-id').value;
+  const payload={};
+  const label=document.getElementById('es-label').value.trim();
+  const login=document.getElementById('es-login').value;
+  const server=document.getElementById('es-server').value.trim();
+  const password=document.getElementById('es-password').value;
+  const lotMode=document.getElementById('es-lot-mode').value;
+  const fixedLot=document.getElementById('es-fixed-lot').value;
+  const multiplier=document.getElementById('es-multiplier').value;
+  const maxLot=document.getElementById('es-max-lot').value;
+  const minLot=document.getElementById('es-min-lot').value;
+  const maxTrades=document.getElementById('es-max-trades').value;
+  if(label) payload.label=label;
+  if(login) payload.login=parseInt(login);
+  if(server) payload.server=server;
+  if(password) payload.password=password;
+  if(lotMode) payload.lot_sizing_mode=lotMode;
+  if(fixedLot) payload.fixed_lot=parseFloat(fixedLot);
+  if(multiplier) payload.multiplier=parseFloat(multiplier);
+  if(maxLot) payload.max_lot=parseFloat(maxLot);
+  if(minLot) payload.min_lot=parseFloat(minLot);
+  if(maxTrades) payload.max_open_trades=parseInt(maxTrades);
+  try{
+    await apiFetch(`/slaves/${id}`,'PUT',payload);
+    closeModal('edit-slave-modal');
+    toast('Slave updated','success');
+    await refreshAll();
+  }catch(e){toast(e.message||'Update failed','error');}
+}
+
+// ══════════════════════════════════════════════════════════════════════
+// PING / RECONNECT
+// ══════════════════════════════════════════════════════════════════════
+async function pingMaster(id, btn){
+  const orig = btn.textContent;
+  btn.disabled = true; btn.textContent = '…';
+  try{
+    const r = await apiFetch(`/masters/${id}/ping`,'POST');
+    toast(`Ping OK — equity $${fmt(r.equity||0)}`,'success');
+    await refreshAll();
+  }catch(e){ toast('Ping failed: '+e.message,'error'); }
+  finally{ btn.disabled=false; btn.textContent=orig; }
+}
+
+async function reconnectMaster(id, btn){
+  const orig = btn.textContent;
+  btn.disabled = true; btn.textContent = '⟳…';
+  try{
+    const r = await apiFetch(`/masters/${id}/reconnect`,'POST');
+    toast(`Master reconnect: ${r.status}`,'info');
+    await refreshAll();
+  }catch(e){ toast('Reconnect failed: '+e.message,'error'); }
+  finally{ btn.disabled=false; btn.textContent=orig; }
+}
+
+async function reconnectSlave(id, btn){
+  const orig = btn.textContent;
+  btn.disabled = true; btn.textContent = '⟳…';
+  try{
+    const r = await apiFetch(`/slaves/${id}/reconnect`,'POST');
+    const s = slavesData.find(x=>x.account_id===id);
+    const label = s ? s.label : id;
+    if(r.status === 'provisioning'){
+      toast(`Provisioning slave "${label}"…`,'info');
+      pollProvisionStatus(id, label);
+    } else {
+      toast(`Slave reconnect: ${r.status}`,'info');
+      await refreshAll();
+    }
+  }catch(e){ toast('Reconnect failed: '+e.message,'error'); }
+  finally{ btn.disabled=false; btn.textContent=orig; }
 }
 
 document.getElementById('cfg-url').addEventListener('change',e=>{ BRIDGE=e.target.value.replace(/\/$/,''); });
