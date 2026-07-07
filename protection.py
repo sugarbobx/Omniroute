@@ -20,6 +20,7 @@ when MT5 is unavailable because they operate purely on floats.
 import logging
 from typing import Optional
 
+import instruments
 from models import (
     SlippageCheckResult,
     SlippageMode,
@@ -30,31 +31,15 @@ from models import (
 
 logger = logging.getLogger("protection")
 
-# ── Point sizes by asset class (fallback when MT5 not available) ─────────────
-# Keys are symbol prefixes; values are the pip size in price terms.
-_POINT_SIZE_MAP = {
-    "XAU": 0.01,    # Gold  — 1 point = 0.01
-    "XAG": 0.001,   # Silver
-    "US30": 1.0,    "DJ30": 1.0,    "WS30": 1.0,   # Indices
-    "NAS": 0.1,     "US100": 0.1,   "USTEC": 0.1,
-    "UK100": 0.1,   "GER40": 0.1,
-    "USOIL": 0.01,  "UKOIL": 0.01,  "WTI": 0.01,
-    "BTC": 1.0,     "ETH": 0.1,
-}
-_DEFAULT_POINT = 0.00001  # Standard forex
 
-
+# Point/pip sizing is centralized in instruments.py so router, bot, and
+# protection all agree on the same numbers.
 def _get_point_size(symbol: str) -> float:
-    sym = symbol.upper()
-    for prefix, size in _POINT_SIZE_MAP.items():
-        if sym.startswith(prefix):
-            return size
-    return _DEFAULT_POINT
+    return instruments.point_size(symbol)
 
 
 def _get_pip_size(symbol: str) -> float:
-    """1 pip = 10 points for most instruments."""
-    return _get_point_size(symbol) * 10
+    return instruments.pip_size(symbol)
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -274,24 +259,24 @@ def calculate_modify_sltp(
 
 RISK_PRESETS: dict[str, TradeProtection] = {
     "ultra_safe": TradeProtection(
-        slippage_enabled=True, slippage_max=1.0, slippage_mode=SlippageMode.POINTS,
+        slippage_enabled=True, slippage_max=1.0, slippage_mode=SlippageMode.PIPS,
         risk_profile_label="ultra_safe", risk_multiplier=0.25, risk_max_lot=1.0,
         sltp_sync_enabled=True, sltp_sync_mode=SyncMode.FULL,
         sltp_scale_sl=0.8, sltp_scale_tp=1.2,  # tighter SL, wider TP
     ),
     "conservative": TradeProtection(
-        slippage_enabled=True, slippage_max=2.0, slippage_mode=SlippageMode.POINTS,
+        slippage_enabled=True, slippage_max=2.0, slippage_mode=SlippageMode.PIPS,
         risk_profile_label="conservative", risk_multiplier=0.5, risk_max_lot=5.0,
         sltp_sync_enabled=True, sltp_sync_mode=SyncMode.FULL,
         sltp_scale_sl=1.0, sltp_scale_tp=1.0,
     ),
     "default": TradeProtection(
-        slippage_enabled=True, slippage_max=3.0, slippage_mode=SlippageMode.POINTS,
+        slippage_enabled=True, slippage_max=3.0, slippage_mode=SlippageMode.PIPS,
         risk_profile_label="default", risk_multiplier=1.0, risk_max_lot=10.0,
         sltp_sync_enabled=True, sltp_sync_mode=SyncMode.FULL,
     ),
     "aggressive": TradeProtection(
-        slippage_enabled=True, slippage_max=5.0, slippage_mode=SlippageMode.POINTS,
+        slippage_enabled=True, slippage_max=5.0, slippage_mode=SlippageMode.PIPS,
         risk_profile_label="aggressive", risk_multiplier=2.0, risk_max_lot=20.0,
         sltp_sync_enabled=True, sltp_sync_mode=SyncMode.FULL,
         sltp_scale_sl=1.0, sltp_scale_tp=1.5,

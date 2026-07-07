@@ -70,7 +70,9 @@ class TradeProtection(BaseModel):
     # ── 1. Slippage Protection ───────────────────────────────────────────────
     slippage_enabled:    bool        = True
     slippage_max:        float       = Field(3.0, description="Maximum allowed slippage before aborting copy")
-    slippage_mode:       SlippageMode = SlippageMode.POINTS
+    # Default to PIPS: a POINTS default of 3 blocks any forex trade beyond 0.3 pips
+    # of drift — normal latency alone exceeds that. Pips is the trader-facing unit.
+    slippage_mode:       SlippageMode = SlippageMode.PIPS
     slippage_action:     str         = "cancel"   # "cancel" | "execute_anyway"
 
     # ── 2. Lot Scaling (Risk Profile) ────────────────────────────────────────

@@ -7,7 +7,10 @@ from pydantic_settings import BaseSettings
 
 class Settings(BaseSettings):
     # Bridge
-    bridge_host:  str   = "0.0.0.0"
+    # Default to loopback: the bridge holds broker credentials and can execute
+    # arbitrary strategy code, so it must not be exposed on all interfaces unless
+    # the operator explicitly opts in (and sets an API_SECRET — enforced at boot).
+    bridge_host:  str   = "127.0.0.1"
     bridge_port:  int   = 8000
     api_secret:   str   = ""
     # Comma-separated allowed origins, e.g. "http://localhost:3000,https://mypanel.com"

@@ -135,6 +135,30 @@ def init_db():
                 mode             TEXT CHECK(mode IN ('forward_test', 'live')),
                 FOREIGN KEY(strategy_id) REFERENCES strategies(strategy_id) ON DELETE CASCADE
             );
+
+            -- Key/value store for operational state that must survive restarts:
+            -- global symbol map, Telegram config, and per-bot runtime state
+            -- (kill switch, daily PnL, peak equity for drawdown).
+            CREATE TABLE IF NOT EXISTS settings (
+                key         TEXT PRIMARY KEY,
+                value       TEXT NOT NULL,
+                updated_at  TEXT NOT NULL
+            );
+
+            -- Write-through copy of the activity log so the Analytics tab and
+            -- audit history survive a restart. Pruned to the most recent rows.
+            CREATE TABLE IF NOT EXISTS trade_logs (
+                id          INTEGER PRIMARY KEY AUTOINCREMENT,
+                level       TEXT NOT NULL,
+                message     TEXT NOT NULL,
+                master_id   TEXT,
+                account_id  TEXT,
+                signal_id   TEXT,
+                symbol      TEXT,
+                latency_ms  REAL,
+                created_at  TEXT NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS idx_trade_logs_created ON trade_logs(created_at);
         """)
         # SQLite has no ALTER TABLE ... ADD COLUMN IF NOT EXISTS — check pragma first
         _ensure_column(conn, "masters", "is_virtual_bot", "INTEGER DEFAULT 0")
@@ -501,3 +525,81 @@ def get_strategy_results(bot_id: str, limit: int = 200) -> list[dict]:
             ORDER BY executed_at DESC LIMIT ?
         """, (bot_id, limit)).fetchall()
     return [dict(r) for r in rows]
+
+
+# ── Settings key/value store ─────────────────────────────────────────────────
+
+def set_setting(key: str, value):
+    """Persist a JSON-serializable value under a key."""
+    with get_conn() as conn:
+        conn.execute("""
+            INSERT INTO settings (key, value, updated_at) VALUES (?,?,?)
+            ON CONFLICT(key) DO UPDATE SET value=excluded.value, updated_at=excluded.updated_at
+        """, (key, json.dumps(value), datetime.utcnow().isoformat()))
+
+
+def get_setting(key: str, default=None):
+    with get_conn() as conn:
+        row = conn.execute("SELECT value FROM settings WHERE key=?", (key,)).fetchone()
+    if not row:
+        return default
+    try:
+        return json.loads(row["value"])
+    except (json.JSONDecodeError, TypeError):
+        return default
+
+
+# ── Per-bot runtime state (kill switch, daily pnl, peak equity) ──────────────
+
+def _bot_state_key(bot_id: str) -> str:
+    return f"bot_state:{bot_id}"
+
+
+def save_bot_state(bot_id: str, state: dict):
+    """Persist only the durable subset of a bot's execution state."""
+    durable = {k: state.get(k) for k in
+               ("killed", "daily_pnl", "consecutive_losses", "peak_equity", "state_day")}
+    set_setting(_bot_state_key(bot_id), durable)
+
+
+def load_bot_state(bot_id: str) -> dict:
+    return get_setting(_bot_state_key(bot_id), {}) or {}
+
+
+def clear_bot_state(bot_id: str):
+    with get_conn() as conn:
+        conn.execute("DELETE FROM settings WHERE key=?", (_bot_state_key(bot_id),))
+
+
+# ── Activity log write-through ───────────────────────────────────────────────
+
+_LOG_PRUNE_KEEP = 5000
+
+
+def append_log(level: str, message: str, master_id=None, account_id=None,
+               signal_id=None, symbol=None, latency_ms=None):
+    with get_conn() as conn:
+        conn.execute("""
+            INSERT INTO trade_logs
+              (level,message,master_id,account_id,signal_id,symbol,latency_ms,created_at)
+            VALUES (?,?,?,?,?,?,?,?)
+        """, (level, message, master_id, account_id, signal_id, symbol, latency_ms,
+              datetime.utcnow().isoformat()))
+        # Opportunistic pruning: keep the table bounded without a background job.
+        conn.execute("""
+            DELETE FROM trade_logs WHERE id < (
+                SELECT MIN(id) FROM (
+                    SELECT id FROM trade_logs ORDER BY id DESC LIMIT ?
+                )
+            )
+        """, (_LOG_PRUNE_KEEP,))
+
+
+def load_recent_logs(limit: int = 400) -> list[dict]:
+    with get_conn() as conn:
+        rows = conn.execute("""
+            SELECT level, message, master_id, account_id, signal_id, symbol,
+                   latency_ms, created_at AS timestamp
+            FROM trade_logs ORDER BY id DESC LIMIT ?
+        """, (limit,)).fetchall()
+    return [dict(r) for r in reversed(rows)]

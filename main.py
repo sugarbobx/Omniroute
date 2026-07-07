@@ -1,50 +1,60 @@
 """
-main.py — OmniRoute v2.2
-New endpoints:
-  POST /trade-modify          — SL/TP sync from Master EA
-  GET/PUT /slaves/{id}/protection — per-slave protection config
-  POST /slaves/{id}/protection/preset — apply a named preset
-  GET  /protection/presets    — list all built-in risk presets
+main.py — OmniRoute v2.3
+
+Highlights this version:
+  • MT5 access via a shared SessionManager (one terminal subprocess per account)
+  • Security: loopback-default bind, constant-time API-key check, WebSocket auth,
+    refusal to expose a non-loopback interface without a secret
+  • Core REST surface is also mounted under /api/v1 (versioned) alongside the
+    legacy top-level paths
+  • The dashboard (index.html + app.js + styles.css) is served by FastAPI itself
+  • Symbol map and Telegram config persist across restarts
 """
 
 import asyncio
+import ast
 import json
 import logging
-import time
-from contextlib import asynccontextmanager
-from datetime import datetime
-from typing import Optional
-
-import ast
+import secrets
 import uuid
+from contextlib import asynccontextmanager
+from logging.handlers import RotatingFileHandler
+from pathlib import Path
+from typing import Optional as Opt
 
 import uvicorn
 from fastapi import APIRouter, FastAPI, HTTPException, BackgroundTasks, Request, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import FileResponse, JSONResponse
 from pydantic import BaseModel, Field
-from typing import Optional as Opt
 
 import database as db
 import notifier
 import strategy_loader
 from bot import BotEngine
 from models import (
-    AccountRole, AddAccountRequest, ConnectionStatus, LinkRequest, MasterAccount,
+    AccountRole, AddAccountRequest, LinkRequest, MasterAccount,
     ModifySignal, SlaveAccount, TradeProtection, TradeSignal, UnlinkRequest,
 )
 from protection import RISK_PRESETS
-from router import CopyRouter, MasterState
+from router import CopyRouter, MasterState, _is_virtual
+from mt5_client import MT5_AVAILABLE
 from config import settings
 
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
-    handlers=[logging.StreamHandler(), logging.FileHandler("bridge.log", encoding="utf-8")],
+    handlers=[
+        logging.StreamHandler(),
+        RotatingFileHandler("bridge.log", maxBytes=5_000_000, backupCount=3, encoding="utf-8"),
+    ],
 )
 logger = logging.getLogger("main")
 
+BASE_DIR = Path(__file__).parent
+
 router = CopyRouter()
-bot_engine = BotEngine(router)
+bot_engine = BotEngine(router)  # shares router.sessions
 
 
 class WSManager:
@@ -58,24 +68,42 @@ class WSManager:
         dead = []
         for ws in self.active:
             try: await ws.send_text(json.dumps(data, default=str))
-            except: dead.append(ws)
+            except Exception: dead.append(ws)
         for ws in dead: self.disconnect(ws)
 
 ws_manager = WSManager()
 
 
+def _load_persisted_settings():
+    """Restore Telegram config saved via the API into the in-memory settings."""
+    tg = db.get_setting("telegram_config", {}) or {}
+    if "enabled" in tg:
+        settings.telegram_enabled = bool(tg["enabled"])
+    if tg.get("bot_token"):
+        settings.telegram_bot_token = tg["bot_token"]
+    if tg.get("chat_id"):
+        settings.telegram_chat_id = tg["chat_id"]
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    logger.info("🚀 OmniRoute v2.3 starting...")
+    logger.info("🚀 OmniRoute v2.3 starting (%s mode)...",
+                "LIVE" if MT5_AVAILABLE else "SIMULATION")
     db.init_db()
+    _load_persisted_settings()
+    # Safety guard: never expose a non-loopback interface without an API secret.
+    if settings.bridge_host not in ("127.0.0.1", "localhost", "::1") and not settings.api_secret:
+        logger.warning("⚠ Bridge bound to %s with NO API_SECRET — the API can execute "
+                       "strategy code and holds broker credentials. Set API_SECRET.",
+                       settings.bridge_host)
     await router.startup()
     await bot_engine.reload_and_synchronize()
+
     async def _push():
         while True:
             await asyncio.sleep(2)
             if ws_manager.active:
                 await ws_manager.broadcast({"type": "status", "data": router.get_full_status()})
-    # Store the task to prevent garbage collection
     push_task = asyncio.create_task(_push())
     try:
         yield
@@ -86,9 +114,8 @@ async def lifespan(app: FastAPI):
         await router.shutdown()
 
 
-app = FastAPI(title="OmniRoute Bridge", version="2.2.0", lifespan=lifespan)
-# allow_credentials=True is incompatible with allow_origins=["*"] per the CORS spec.
-# Use explicit origins (from env) or allow all without credentials.
+app = FastAPI(title="OmniRoute Bridge", version="2.3.0", lifespan=lifespan)
+
 _cors_origins = [o.strip() for o in (settings.cors_origins or "").split(",") if o.strip()] or ["*"]
 app.add_middleware(
     CORSMiddleware,
@@ -98,9 +125,15 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+# Paths reachable without an API key (docs, health, and the static dashboard so
+# the user can load the page to enter their key).
+_AUTH_SKIP = {"/health", "/docs", "/openapi.json", "/redoc", "/",
+              "/index.html", "/app.js", "/styles.css", "/favicon.svg"}
+
 
 @app.middleware("http")
 async def timing(request: Request, call_next):
+    import time
     t0 = time.perf_counter()
     resp = await call_next(request)
     resp.headers["X-Latency-Ms"] = f"{(time.perf_counter()-t0)*1000:.2f}"
@@ -110,72 +143,58 @@ async def timing(request: Request, call_next):
 @app.middleware("http")
 async def api_auth(request: Request, call_next):
     secret = settings.api_secret
-    if secret:
-        # Skip auth for health check and docs
-        if request.url.path not in ("/health", "/docs", "/openapi.json", "/redoc"):
-            token = request.headers.get("X-API-Key") or request.query_params.get("api_key")
-            if token != secret:
-                from fastapi.responses import JSONResponse
-                return JSONResponse({"detail": "Unauthorized"}, status_code=401)
+    if secret and request.url.path not in _AUTH_SKIP:
+        # Header only — a query param would leak the key into access logs.
+        token = request.headers.get("X-API-Key") or ""
+        if not secrets.compare_digest(token, secret):
+            return JSONResponse({"detail": "Unauthorized"}, status_code=401)
     return await call_next(request)
 
 
-# ── Health ────────────────────────────────────────────────────────────────────
+# ══════════════════════════════════════════════════════════════════════════
+# Core REST surface — defined on a router so it can be mounted at both the
+# legacy root paths and under /api/v1.
+# ══════════════════════════════════════════════════════════════════════════
 
-@app.get("/health", tags=["Health"])
+core = APIRouter()
+
+
+@core.get("/health", tags=["Health"])
 async def health():
-    return {"status": "healthy", "app": "OmniRoute", "version": "2.2.0",
+    return {"status": "healthy", "app": "OmniRoute", "version": "2.3.0",
+            "mode": "live" if MT5_AVAILABLE else "simulation",
             "masters": len(router.masters), "slaves": len(router.slaves)}
 
 
-# ── Trade signals ─────────────────────────────────────────────────────────────
-
-@app.post("/trade-signal", tags=["Trading"])
+@core.post("/trade-signal", tags=["Trading"])
 async def trade_signal(signal: TradeSignal, background_tasks: BackgroundTasks):
+    import time
     t0 = time.perf_counter()
     if signal.magic_number not in router._magic_index:
         raise HTTPException(404, f"No master for magic_number={signal.magic_number}")
     background_tasks.add_task(router.route_signal, signal, t0)
-    return {
-        "status": "accepted", "signal_id": signal.signal_id,
-        "magic_number": signal.magic_number,
-        "master_id": router._magic_index.get(signal.magic_number),
-        "bridge_latency_ms": round((time.perf_counter()-t0)*1000, 2),
-    }
+    return {"status": "accepted", "signal_id": signal.signal_id,
+            "magic_number": signal.magic_number,
+            "master_id": router._magic_index.get(signal.magic_number),
+            "bridge_latency_ms": round((time.perf_counter()-t0)*1000, 2)}
 
 
-@app.post("/trade-close", tags=["Trading"])
+@core.post("/trade-close", tags=["Trading"])
 async def trade_close(magic_number: int, symbol: str, background_tasks: BackgroundTasks):
     background_tasks.add_task(router.route_close, magic_number, symbol)
     return {"status": "close_dispatched", "magic_number": magic_number, "symbol": symbol}
 
 
-@app.post("/trade-modify", tags=["Trading"])
+@core.post("/trade-modify", tags=["Trading"])
 async def trade_modify(modify: ModifySignal, background_tasks: BackgroundTasks):
-    """
-    Called by the Master EA when a position's SL or TP is changed.
-    Routes the modification to all linked slaves, applying per-slave
-    SL/TP scaling and offset transformations.
-
-    MQL5 snippet to call this endpoint:
-      OnTradeTransaction → TRADE_TRANSACTION_POSITION
-      payload: {magic_number, symbol, new_sl, new_tp, master_price}
-    """
     if modify.magic_number not in router._magic_index:
         raise HTTPException(404, f"No master for magic_number={modify.magic_number}")
     background_tasks.add_task(router.route_modify, modify)
-    return {
-        "status": "modify_dispatched",
-        "magic_number": modify.magic_number,
-        "symbol": modify.symbol,
-        "new_sl": modify.new_sl,
-        "new_tp": modify.new_tp,
-    }
+    return {"status": "modify_dispatched", "magic_number": modify.magic_number,
+            "symbol": modify.symbol, "new_sl": modify.new_sl, "new_tp": modify.new_tp}
 
 
-# ── Accounts ──────────────────────────────────────────────────────────────────
-
-@app.post("/account", tags=["Accounts"])
+@core.post("/account", tags=["Accounts"])
 async def add_account(req: AddAccountRequest):
     if req.role == AccountRole.MASTER:
         if req.magic_number is None:
@@ -185,164 +204,164 @@ async def add_account(req: AddAccountRequest):
             terminal_path=req.terminal_path, magic_number=req.magic_number, symbol_map=req.symbol_map,
         )
         return await router.add_master(account)
-    else:
-        account = SlaveAccount(
-            label=req.label, login=req.login, password=req.password, server=req.server,
-            terminal_path=req.terminal_path, lot_sizing_mode=req.lot_sizing_mode,
-            fixed_lot=req.fixed_lot, multiplier=req.multiplier, max_lot=req.max_lot,
-            min_lot=req.min_lot, max_open_trades=req.max_open_trades, protection=req.protection,
-        )
-        return await router.add_slave(account)
+    account = SlaveAccount(
+        label=req.label, login=req.login, password=req.password, server=req.server,
+        terminal_path=req.terminal_path, lot_sizing_mode=req.lot_sizing_mode,
+        fixed_lot=req.fixed_lot, multiplier=req.multiplier, max_lot=req.max_lot,
+        min_lot=req.min_lot, max_open_trades=req.max_open_trades, protection=req.protection,
+    )
+    return await router.add_slave(account)
 
 
-# ── Masters ───────────────────────────────────────────────────────────────────
-
-@app.get("/masters", tags=["Masters"])
+@core.get("/masters", tags=["Masters"])
 async def list_masters(): return router.get_master_statuses()
 
-@app.post("/masters", tags=["Masters"])
-async def add_master(account: MasterAccount): return await router.add_master(account)
+@core.post("/masters", tags=["Masters"])
+async def create_master(account: MasterAccount): return await router.add_master(account)
 
-@app.delete("/masters/{master_id}", tags=["Masters"])
+@core.delete("/masters/{master_id}", tags=["Masters"])
 async def remove_master(master_id: str):
-    result = router.remove_master(master_id)
-    if result["status"] == "not_found": raise HTTPException(404)
+    result = await router.remove_master(master_id)
+    if result["status"] == "not_found":
+        raise HTTPException(404)
+    # If this master was actually a virtual bot, tear down its task and state too.
+    if result.get("was_virtual"):
+        await bot_engine.kill_bot_task(master_id)
+        bot_engine.execution_states.pop(master_id, None)
+        db.clear_bot_state(master_id)
+        db.delete_virtual_bot(master_id)
     return result
 
 
-# ── Slaves ────────────────────────────────────────────────────────────────────
-
-@app.get("/slaves", tags=["Slaves"])
+@core.get("/slaves", tags=["Slaves"])
 async def list_slaves(): return router.get_slave_statuses()
 
-@app.post("/slaves", tags=["Slaves"])
-async def add_slave(account: SlaveAccount): return await router.add_slave(account)
+@core.post("/slaves", tags=["Slaves"])
+async def create_slave(account: SlaveAccount): return await router.add_slave(account)
 
-@app.delete("/slaves/{account_id}", tags=["Slaves"])
+@core.delete("/slaves/{account_id}", tags=["Slaves"])
 async def remove_slave(account_id: str):
-    result = router.remove_slave(account_id)
-    if result["status"] == "not_found": raise HTTPException(404)
+    result = await router.remove_slave(account_id)
+    if result["status"] == "not_found":
+        raise HTTPException(404)
     return result
 
 
-# ── Protection endpoints ──────────────────────────────────────────────────────
-
-@app.get("/slaves/{account_id}/protection", tags=["Protection"])
+@core.get("/slaves/{account_id}/protection", tags=["Protection"])
 async def get_protection(account_id: str):
     if account_id not in router.slaves:
         raise HTTPException(404, f"Slave {account_id} not found")
-    prot = router.slaves[account_id].account.protection
-    return {"account_id": account_id, "protection": prot.model_dump()}
+    return {"account_id": account_id, "protection": router.slaves[account_id].account.protection.model_dump()}
 
 
-@app.put("/slaves/{account_id}/protection", tags=["Protection"])
+@core.put("/slaves/{account_id}/protection", tags=["Protection"])
 async def update_protection(account_id: str, protection: TradeProtection):
-    """Update full protection config for a slave."""
     result = router.update_protection(account_id, protection)
     if result["status"] == "not_found":
         raise HTTPException(404)
     return result
 
 
-@app.patch("/slaves/{account_id}/protection", tags=["Protection"])
+@core.patch("/slaves/{account_id}/protection", tags=["Protection"])
 async def patch_protection(account_id: str, updates: dict):
-    """
-    Partial update — only send the fields you want to change.
-    Example: {"risk_multiplier": 0.5, "slippage_max": 2.0}
-    """
     if account_id not in router.slaves:
         raise HTTPException(404)
     current = router.slaves[account_id].account.protection.model_dump()
     current.update(updates)
     new_prot = TradeProtection.model_validate(current)
-    result = router.update_protection(account_id, new_prot)
-    return result
+    return router.update_protection(account_id, new_prot)
 
 
-@app.post("/slaves/{account_id}/protection/preset", tags=["Protection"])
+@core.post("/slaves/{account_id}/protection/preset", tags=["Protection"])
 async def apply_preset(account_id: str, preset_name: str):
-    """
-    Apply a named risk preset. Available: ultra_safe, conservative, default, aggressive, no_protection
-    """
     if account_id not in router.slaves:
         raise HTTPException(404, f"Slave {account_id} not found")
     if preset_name not in RISK_PRESETS:
         raise HTTPException(400, f"Unknown preset '{preset_name}'. Available: {list(RISK_PRESETS.keys())}")
     preset = RISK_PRESETS[preset_name]
-    result = router.update_protection(account_id, preset)
-    return {"status": "preset_applied", "preset": preset_name, "account_id": account_id, "protection": preset.model_dump()}
+    router.update_protection(account_id, preset)
+    return {"status": "preset_applied", "preset": preset_name, "account_id": account_id,
+            "protection": preset.model_dump()}
 
 
-@app.get("/protection/presets", tags=["Protection"])
+@core.get("/protection/presets", tags=["Protection"])
 async def list_presets():
-    """List all built-in risk profile presets."""
     return {name: p.model_dump() for name, p in RISK_PRESETS.items()}
 
 
-# ── Links ─────────────────────────────────────────────────────────────────────
-
-@app.post("/link", tags=["Relations"])
+@core.post("/link", tags=["Relations"])
 async def link_accounts(req: LinkRequest):
     result = router.link(req.master_id, req.account_id)
-    if "not_found" in result.get("status", ""): raise HTTPException(404, result["status"])
+    if "not_found" in result.get("status", ""):
+        raise HTTPException(404, result["status"])
     return result
 
-@app.post("/unlink", tags=["Relations"])
+@core.post("/unlink", tags=["Relations"])
 async def unlink_accounts(req: UnlinkRequest):
     return router.unlink(req.master_id, req.account_id)
 
 
-# ── Symbol map ────────────────────────────────────────────────────────────────
+@core.get("/symbol-map", tags=["Config"])
+async def get_symbol_map():
+    return {"global": router.global_symbol_map}
 
-@app.get("/symbol-map", tags=["Config"])
-async def get_symbol_map(): return {"global": router.global_symbol_map}
-
-@app.post("/symbol-map", tags=["Config"])
+@core.post("/symbol-map", tags=["Config"])
 async def update_symbol_map(mapping: dict[str, str]):
-    router.global_symbol_map.update(mapping)
+    # Replace semantics: the UI always sends the full map, so a removed key must
+    # actually disappear (a merge would leave deleted mappings behind).
+    router.global_symbol_map = dict(mapping)
+    db.set_setting("global_symbol_map", router.global_symbol_map)
     return {"status": "updated", "global_symbol_map": router.global_symbol_map}
 
 
-# ── Telegram ──────────────────────────────────────────────────────────────────
-
-@app.get("/telegram/config", tags=["Telegram"])
+@core.get("/telegram/config", tags=["Telegram"])
 async def get_telegram_config():
     token = settings.telegram_bot_token
     return {"enabled": settings.telegram_enabled, "configured": bool(token and settings.telegram_chat_id),
             "bot_token_set": bool(token), "chat_id_set": bool(settings.telegram_chat_id),
             "token_preview": f"...{token[-8:]}" if token else "not set"}
 
-@app.patch("/telegram/config", tags=["Telegram"])
+@core.patch("/telegram/config", tags=["Telegram"])
 async def update_telegram_config(payload: dict):
     if "enabled"   in payload: settings.telegram_enabled    = bool(payload["enabled"])
-    if "bot_token" in payload and payload["bot_token"]: settings.telegram_bot_token = str(payload["bot_token"])
-    if "chat_id"   in payload and payload["chat_id"]:   settings.telegram_chat_id   = str(payload["chat_id"])
+    if payload.get("bot_token"): settings.telegram_bot_token = str(payload["bot_token"])
+    if payload.get("chat_id"):   settings.telegram_chat_id   = str(payload["chat_id"])
+    db.set_setting("telegram_config", {"enabled": settings.telegram_enabled,
+                                       "bot_token": settings.telegram_bot_token,
+                                       "chat_id": settings.telegram_chat_id})
     return {"status": "updated", "enabled": settings.telegram_enabled}
 
-@app.post("/telegram/test", tags=["Telegram"])
+@core.post("/telegram/test", tags=["Telegram"])
 async def test_telegram():
     if not settings.telegram_bot_token or not settings.telegram_chat_id:
         raise HTTPException(400, "Configure bot token and chat ID first")
-    success = await notifier.send_test_message()
-    if success: return {"status": "sent"}
+    if await notifier.send_test_message():
+        return {"status": "sent"}
     raise HTTPException(500, "Failed to send — check token and chat ID")
 
-@app.patch("/telegram/toggle", tags=["Telegram"])
+@core.patch("/telegram/toggle", tags=["Telegram"])
 async def toggle_telegram(enabled: bool):
     settings.telegram_enabled = enabled
+    db.set_setting("telegram_config", {"enabled": settings.telegram_enabled,
+                                       "bot_token": settings.telegram_bot_token,
+                                       "chat_id": settings.telegram_chat_id})
     return {"telegram_enabled": settings.telegram_enabled}
 
 
-# ── Status / Logs ─────────────────────────────────────────────────────────────
-
-@app.get("/status", tags=["Monitoring"])
+@core.get("/status", tags=["Monitoring"])
 async def get_status(): return router.get_full_status()
 
-@app.get("/logs", tags=["Monitoring"])
+@core.get("/logs", tags=["Monitoring"])
 async def get_logs(limit: int = 200): return router.get_recent_logs(limit)
 
 
-# ── Bot Engine API ────────────────────────────────────────────────────────────
+app.include_router(core)                    # legacy top-level paths
+app.include_router(core, prefix="/api/v1")  # versioned aliases
+
+
+# ══════════════════════════════════════════════════════════════════════════
+# Bot Engine API
+# ══════════════════════════════════════════════════════════════════════════
 
 bot_api = APIRouter(prefix="/api/v1/bots", tags=["Bots"])
 
@@ -353,18 +372,17 @@ class BotCreateRequest(BaseModel):
     timeframe: str = "M5"
     magic_number: int
     base_volume: float = Field(0.1, gt=0)
-    mode: str = "standalone"           # standalone | connected
+    mode: str = "standalone"
     forward_test: bool = False
     enabled: bool = True
 
 
 def _register_virtual_master(bot: dict):
-    """Expose the bot in the copier's master registry so connected-mode signals
-    route through router.route_signal and the bot shows on the dashboard."""
     acct = MasterAccount(
         master_id=bot["bot_id"], label=f"🤖 {bot['label']}", login=0, password="-",
         server="virtual", terminal_path="virtual", magic_number=bot["magic_number"],
     )
+    from models import ConnectionStatus
     state = MasterState(acct)
     state.status = ConnectionStatus.CONNECTED
     router.masters[bot["bot_id"]] = state
@@ -392,12 +410,10 @@ async def create_bot(req: BotCreateRequest):
         raise HTTPException(400, "timeframe must be one of M1, M5, M15, H1")
     if req.magic_number in router._magic_index:
         raise HTTPException(409, f"magic_number {req.magic_number} already in use")
-    bot = {
-        "bot_id": str(uuid.uuid4())[:8], "label": req.label, "symbol": req.symbol.upper(),
-        "timeframe": req.timeframe, "magic_number": req.magic_number,
-        "base_volume": req.base_volume, "mode": req.mode,
-        "forward_test": req.forward_test, "enabled": req.enabled, "strategy_name": None,
-    }
+    bot = {"bot_id": str(uuid.uuid4())[:8], "label": req.label, "symbol": req.symbol.upper(),
+           "timeframe": req.timeframe, "magic_number": req.magic_number,
+           "base_volume": req.base_volume, "mode": req.mode,
+           "forward_test": req.forward_test, "enabled": req.enabled, "strategy_name": None}
     db.save_virtual_bot(bot)
     _register_virtual_master(bot)
     await bot_engine.reload_and_synchronize()
@@ -419,7 +435,6 @@ async def update_bot(bot_id: str, updates: dict):
             raise HTTPException(409, f"magic_number {updates['magic_number']} already in use")
     db.update_virtual_bot(bot_id, updates)
     bot = db.get_virtual_bot(bot_id)
-    # keep the copier registry in step
     old_state = router.masters.get(bot_id)
     if old_state:
         router._magic_index.pop(old_state.account.magic_number, None)
@@ -436,10 +451,12 @@ async def delete_bot(bot_id: str):
         raise HTTPException(404, f"Bot {bot_id} not found")
     await bot_engine.kill_bot_task(bot_id)
     bot_engine.execution_states.pop(bot_id, None)
+    db.clear_bot_state(bot_id)
     db.delete_virtual_bot(bot_id)
     state = router.masters.pop(bot_id, None)
     if state:
         router._magic_index.pop(state.account.magic_number, None)
+    await router.sessions.remove(bot_id)
     return {"status": "deleted", "bot_id": bot_id}
 
 
@@ -475,18 +492,20 @@ async def bot_results(bot_id: str, limit: int = 200):
 app.include_router(bot_api)
 
 
-# ── Strategy API ──────────────────────────────────────────────────────────────
+# ══════════════════════════════════════════════════════════════════════════
+# Strategy API
+# ══════════════════════════════════════════════════════════════════════════
 
 strategy_api = APIRouter(prefix="/api/v1/strategies", tags=["Strategies"])
 
 
 class StrategyCreateRequest(BaseModel):
     name: str
-    mode: str                      # visual | code
+    mode: str
     symbol: str
     timeframe: str
-    blocks: Opt[dict] = None       # visual mode
-    source_code: Opt[str] = None   # code mode
+    blocks: Opt[dict] = None
+    source_code: Opt[str] = None
 
 
 def _validate_strategy_payload(req: StrategyCreateRequest):
@@ -520,7 +539,8 @@ def _write_strategy_file(strategy_id: str, req: StrategyCreateRequest) -> str:
 def _strategy_with_content(row: dict) -> dict:
     out = dict(row)
     try:
-        text = open(row["file_path"], encoding="utf-8").read()
+        with open(row["file_path"], encoding="utf-8") as fh:
+            text = fh.read()
         if row["mode"] == "visual":
             out["blocks"] = json.loads(text)
         else:
@@ -540,10 +560,8 @@ async def create_strategy(req: StrategyCreateRequest):
     _validate_strategy_payload(req)
     strategy_id = str(uuid.uuid4())[:8]
     file_path = _write_strategy_file(strategy_id, req)
-    db.save_strategy({
-        "strategy_id": strategy_id, "name": req.name, "mode": req.mode,
-        "symbol": req.symbol.upper(), "timeframe": req.timeframe, "file_path": file_path,
-    })
+    db.save_strategy({"strategy_id": strategy_id, "name": req.name, "mode": req.mode,
+                      "symbol": req.symbol.upper(), "timeframe": req.timeframe, "file_path": file_path})
     return {"status": "created", "strategy_id": strategy_id}
 
 
@@ -561,13 +579,16 @@ async def update_strategy(strategy_id: str, req: StrategyCreateRequest):
     if not row:
         raise HTTPException(404, f"Strategy {strategy_id} not found")
     _validate_strategy_payload(req)
+    # If the mode changed (visual↔code) the old file has a different extension —
+    # remove it so we don't leave an orphan behind.
+    old_path = Path(row["file_path"])
     file_path = _write_strategy_file(strategy_id, req)
-    db.save_strategy({
-        "strategy_id": strategy_id, "name": req.name, "mode": req.mode,
-        "symbol": req.symbol.upper(), "timeframe": req.timeframe, "file_path": file_path,
-        "assigned_bot_id": row["assigned_bot_id"],
-    })
-    if row["assigned_bot_id"]:  # hot-reload the bot running this strategy
+    if str(old_path) != file_path:
+        old_path.unlink(missing_ok=True)
+    db.save_strategy({"strategy_id": strategy_id, "name": req.name, "mode": req.mode,
+                      "symbol": req.symbol.upper(), "timeframe": req.timeframe,
+                      "file_path": file_path, "assigned_bot_id": row["assigned_bot_id"]})
+    if row["assigned_bot_id"]:
         await bot_engine.kill_bot_task(row["assigned_bot_id"])
         await bot_engine.reload_and_synchronize()
     return {"status": "updated", "strategy_id": strategy_id}
@@ -582,21 +603,24 @@ async def delete_strategy(strategy_id: str):
         await bot_engine.kill_bot_task(row["assigned_bot_id"])
         db.update_virtual_bot(row["assigned_bot_id"], {"strategy_name": None})
     db.delete_strategy(strategy_id)
-    try:
-        from pathlib import Path
-        Path(row["file_path"]).unlink(missing_ok=True)
-    except OSError:
-        pass
+    Path(row["file_path"]).unlink(missing_ok=True)
     return {"status": "deleted", "strategy_id": strategy_id}
 
 
 app.include_router(strategy_api)
 
 
-# ── WebSocket ─────────────────────────────────────────────────────────────────
+# ══════════════════════════════════════════════════════════════════════════
+# WebSocket (authenticated via ?api_key= when a secret is configured)
+# ══════════════════════════════════════════════════════════════════════════
 
 @app.websocket("/ws/status")
 async def ws_status(ws: WebSocket):
+    if settings.api_secret:
+        token = ws.query_params.get("api_key") or ""
+        if not secrets.compare_digest(token, settings.api_secret):
+            await ws.close(code=1008)  # policy violation
+            return
     await ws_manager.connect(ws)
     try:
         await ws.send_text(json.dumps({"type": "status", "data": router.get_full_status()}, default=str))
@@ -605,7 +629,31 @@ async def ws_status(ws: WebSocket):
             await ws.send_text(json.dumps({"type": "ping"}))
     except WebSocketDisconnect:
         ws_manager.disconnect(ws)
+    except Exception:
+        ws_manager.disconnect(ws)
+
+
+# ══════════════════════════════════════════════════════════════════════════
+# Static dashboard
+# ══════════════════════════════════════════════════════════════════════════
+
+@app.get("/", include_in_schema=False)
+async def index():
+    return FileResponse(BASE_DIR / "index.html")
+
+@app.get("/app.js", include_in_schema=False)
+async def app_js():
+    return FileResponse(BASE_DIR / "app.js", media_type="application/javascript")
+
+@app.get("/styles.css", include_in_schema=False)
+async def styles_css():
+    return FileResponse(BASE_DIR / "styles.css", media_type="text/css")
+
+@app.get("/favicon.svg", include_in_schema=False)
+async def favicon():
+    return FileResponse(BASE_DIR / "favicon.svg", media_type="image/svg+xml")
 
 
 if __name__ == "__main__":
-    uvicorn.run("main:app", host="0.0.0.0", port=8000, reload=False, workers=1)
+    uvicorn.run("main:app", host=settings.bridge_host, port=settings.bridge_port,
+                reload=False, workers=1)

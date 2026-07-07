@@ -286,13 +286,19 @@ class VisualStrategyRuntime:
         state = md.get("state") or {}
 
         if state.get("open_position"):
+            # Exit conditions take precedence over any new entry.
             exit_block = self.blocks.get("exit") or {}
             if exit_block.get("type", "indicator") == "indicator" and exit_block.get("indicator"):
                 series = _indicator_series(exit_block["indicator"], exit_block.get("period", 14), md)
                 if _check_operator(series, exit_block.get("operator", "gt"), exit_block.get("value", 0)):
                     return "CLOSE"
-            # fixed-type exits (tp/sl pips) are enforced by the broker/bot engine
-            return "HOLD"
+            # Only surface a fresh entry signal (so the engine can reverse) when
+            # reverse_on_signal is set; otherwise hold. Without this, the engine's
+            # reverse logic could never fire for visual strategies.
+            if not (self.blocks.get("position") or {}).get("reverse_on_signal"):
+                # fixed-type exits (tp/sl pips) are enforced by the bot engine
+                return "HOLD"
+            # fall through and evaluate the entry condition below
 
         entry = self.blocks["entry"]
         direction = (entry.get("direction") or "BUY").upper()

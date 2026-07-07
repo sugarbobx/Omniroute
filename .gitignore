@@ -5,6 +5,9 @@ copybridge.db
 copybridge.db-*
 verify_shots/
 logs_tmp.json
+server.log
+.pytest_cache/
+tests/__pycache__/
 # user-created strategy files are runtime data, not source
 strategies/*
 !strategies/__init__.py

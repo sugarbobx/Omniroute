@@ -4,53 +4,51 @@ Runs one asyncio task per enabled virtual bot. Each loop tick:
   fetch OHLC → strategy.evaluate() → risk gates → execute / route.
 
 Two signal modes:
-  • standalone — bot sends orders directly via the MT5 SDK
+  • standalone — bot sends orders directly through its own terminal session
   • connected  — bot injects a TradeSignal into the copier (router.route_signal);
-                 its magic_number is a masters row with is_virtual_bot=1, so the
-                 existing copier fan-out and per-slave protection apply unchanged.
+                 the copier fan-out and per-slave protection apply unchanged, and
+                 the returned per-slave results tell the bot whether anything
+                 actually executed.
 
-All MT5 SDK calls go through run_in_executor — the C extension must never block
-the event loop. When MetaTrader5 is unavailable, deterministic mock data keeps
-the whole system functional ([SIMULATION MODE]).
+All MT5 access goes through the shared SessionManager (mt5_client), so no SDK call
+blocks the event loop and simulation mode stays fully functional.
+
+Durable safety state (kill switch, daily PnL, peak equity for drawdown) is persisted
+to the settings table so a killed bot stays killed across restarts.
 """
 
 import asyncio
-import hashlib
 import logging
-import math
 import time
 import uuid
-from datetime import datetime, date
+from dataclasses import dataclass, asdict, field
+from datetime import datetime, timezone
 from typing import Dict, Optional
 
 from pydantic import BaseModel, Field
 
 import database as db
+import instruments
 import notifier
 import strategy_loader
-from models import ConnectionStatus, TradeSignal, TradeType
+from mt5_client import MT5_AVAILABLE, RETCODE_DONE, SessionManager
+from models import TradeSignal, TradeType
 
 logger = logging.getLogger("bot")
 
-try:
-    import MetaTrader5 as mt5
-    MT5_AVAILABLE = True
-except ImportError:
-    mt5 = None  # type: ignore
-    MT5_AVAILABLE = False
-
-TIMEFRAME_SECONDS = {"M1": 60, "M5": 300, "M15": 900, "H1": 3600, "H4": 14400, "D1": 86400}
 POLL_INTERVALS = {"M1": 10, "M5": 15, "M15": 30, "H1": 60}
 BARS_TO_FETCH = 250  # enough history for EMA(200) trend filters
 
-SIM_EQUITY = 10_000.0
+
+def _today_str() -> str:
+    return datetime.now(timezone.utc).date().isoformat()
 
 
 class BotConfig(BaseModel):
     bot_id: str
     label: str
     symbol: str
-    timeframe: str = "M5"            # M1 | M5 | M15 | H1
+    timeframe: str = "M5"
     magic_number: int
     base_volume: float = 0.1
     strategy_id: Optional[str] = None
@@ -60,103 +58,27 @@ class BotConfig(BaseModel):
     linked_master_ids: list[str] = Field(default_factory=list)
 
 
-# ══════════════════════════════════════════════════════════════════════════
-# MT5 access — executor-wrapped, with simulation fallbacks
-# ══════════════════════════════════════════════════════════════════════════
+@dataclass
+class BotRuntimeState:
+    """Typed execution state — replaces the old free-form dict so a mis-typed key
+    is a clear error rather than a silent new field."""
+    open_position: bool = False
+    last_direction: str = "NONE"
+    daily_pnl: float = 0.0
+    consecutive_losses: int = 0
+    killed: bool = False
+    partial_closed: bool = False
+    entry_price: Optional[float] = None
+    entry_volume: float = 0.0
+    ticket: Optional[int] = None
+    status: str = "running"
+    peak_equity: float = 0.0
+    trail_sl: Optional[float] = None
+    state_day: str = field(default_factory=_today_str)
 
-def _mt5_timeframe(tf: str):
-    return {
-        "M1": mt5.TIMEFRAME_M1, "M5": mt5.TIMEFRAME_M5,
-        "M15": mt5.TIMEFRAME_M15, "H1": mt5.TIMEFRAME_H1,
-        "H4": mt5.TIMEFRAME_H4, "D1": mt5.TIMEFRAME_D1,
-    }.get(tf, mt5.TIMEFRAME_M5)
-
-
-def _sim_rates(symbol: str, timeframe: str, count: int) -> dict:
-    """Deterministic synthetic OHLC: a slow sine trend plus hash-based noise,
-    keyed by symbol and candle index so repeated calls within the same candle
-    return identical data."""
-    logger.info(f"[SIMULATION MODE] copy_rates_from_pos({symbol}, {timeframe}, {count})")
-    tf_sec = TIMEFRAME_SECONDS.get(timeframe, 300)
-    now_idx = int(time.time() // tf_sec)
-    seed_base = int(hashlib.md5(symbol.encode()).hexdigest()[:8], 16)
-    base_price = 1.0 + (seed_base % 2000) / 1000.0  # symbol-stable base ~1.0–3.0
-
-    def noise(idx: int) -> float:
-        h = int(hashlib.md5(f"{symbol}:{idx}".encode()).hexdigest()[:8], 16)
-        return (h / 0xFFFFFFFF) - 0.5  # [-0.5, 0.5]
-
-    opens, highs, lows, closes, volumes, times = [], [], [], [], [], []
-    prev_close = None
-    for i in range(count):
-        idx = now_idx - count + 1 + i
-        trend = math.sin(idx / 30.0) * 0.01 * base_price
-        c = base_price + trend + noise(idx) * 0.002 * base_price
-        o = prev_close if prev_close is not None else c + noise(idx - 1) * 0.001 * base_price
-        spread = abs(noise(idx + 7)) * 0.0015 * base_price + 0.0001 * base_price
-        highs.append(round(max(o, c) + spread, 5))
-        lows.append(round(min(o, c) - spread, 5))
-        opens.append(round(o, 5))
-        closes.append(round(c, 5))
-        volumes.append(100 + int(abs(noise(idx + 13)) * 900))
-        times.append(idx * tf_sec)
-        prev_close = c
-    return {"open": opens, "high": highs, "low": lows, "close": closes,
-            "volume": volumes, "time": times}
-
-
-async def fetch_rates(symbol: str, timeframe: str, count: int = BARS_TO_FETCH) -> Optional[dict]:
-    """Fetch OHLC as parallel lists (oldest → newest)."""
-    if not MT5_AVAILABLE:
-        return _sim_rates(symbol, timeframe, count)
-    loop = asyncio.get_running_loop()
-    rates = await loop.run_in_executor(
-        None, mt5.copy_rates_from_pos, symbol, _mt5_timeframe(timeframe), 0, count)
-    if rates is None or len(rates) == 0:
-        return None
-    return {
-        "open":   [float(r["open"]) for r in rates],
-        "high":   [float(r["high"]) for r in rates],
-        "low":    [float(r["low"]) for r in rates],
-        "close":  [float(r["close"]) for r in rates],
-        "volume": [int(r["tick_volume"]) for r in rates],
-        "time":   [int(r["time"]) for r in rates],
-    }
-
-
-class _SimOrderResult:
-    def __init__(self, price: float):
-        self.retcode = 10009  # TRADE_RETCODE_DONE
-        self.order = 500000 + int(time.time() * 1000) % 99999
-        self.price = price
-
-
-async def send_order(request: dict) -> object:
-    if not MT5_AVAILABLE:
-        logger.info(f"[SIMULATION MODE] order_send({request.get('symbol')} "
-                    f"{request.get('type')} vol={request.get('volume')})")
-        return _SimOrderResult(request.get("price", 0.0))
-    loop = asyncio.get_running_loop()
-    return await loop.run_in_executor(None, mt5.order_send, request)
-
-
-async def get_positions(magic: int, symbol: Optional[str] = None) -> list:
-    if not MT5_AVAILABLE:
-        logger.info(f"[SIMULATION MODE] positions_get(magic={magic})")
-        return []
-    loop = asyncio.get_running_loop()
-    def _get():
-        positions = mt5.positions_get(symbol=symbol) if symbol else mt5.positions_get()
-        return [p for p in (positions or []) if p.magic == magic]
-    return await loop.run_in_executor(None, _get)
-
-
-async def get_equity() -> float:
-    if not MT5_AVAILABLE:
-        return SIM_EQUITY
-    loop = asyncio.get_running_loop()
-    info = await loop.run_in_executor(None, mt5.account_info)
-    return float(info.equity) if info else SIM_EQUITY
+    def durable(self) -> dict:
+        return {k: getattr(self, k) for k in
+                ("killed", "daily_pnl", "consecutive_losses", "peak_equity", "state_day")}
 
 
 # ══════════════════════════════════════════════════════════════════════════
@@ -165,13 +87,42 @@ async def get_equity() -> float:
 
 class BotEngine:
     """One asyncio task per enabled bot; reload_and_synchronize() reconciles
-    running tasks against DB state."""
+    running tasks against DB state. Terminal access is shared with the copier
+    via a single SessionManager."""
 
-    def __init__(self, copy_router):
-        self.router = copy_router  # CopyRouter — bot → copier, never the reverse
+    def __init__(self, copy_router, sessions: Optional[SessionManager] = None):
+        self.router = copy_router
+        self.sessions = sessions or getattr(copy_router, "sessions", None) or SessionManager()
         self.active_tasks: Dict[str, asyncio.Task] = {}
-        self.execution_states: Dict[str, dict] = {}
-        self._today = date.today()
+        self.execution_states: Dict[str, BotRuntimeState] = {}
+        self._today = _today_str()
+
+    # ── session access ──────────────────────────────────────────────────
+
+    async def _session_for(self, bot: BotConfig):
+        """Ensure a terminal session exists for a standalone bot. In sim mode this
+        is a never-failing SimSession; in live mode it initializes the default
+        terminal (bots carry no separate credentials)."""
+        sess = self.sessions.get(bot.bot_id)
+        if sess and sess.connected:
+            return sess
+        if not MT5_AVAILABLE:
+            return self.sessions.create_sim(bot.bot_id)
+        try:
+            return await self.sessions.get_or_create(bot.bot_id, path=None)
+        except Exception as e:
+            logger.warning(f"Bot {bot.label}: standalone terminal unavailable ({e}) — "
+                           f"consider connected mode for live trading")
+            return self.sessions.create_sim(bot.bot_id)
+
+    async def fetch_rates(self, bot: BotConfig, timeframe: str) -> Optional[dict]:
+        sess = await self._session_for(bot)
+        return await sess.copy_rates(bot.symbol, timeframe, BARS_TO_FETCH)
+
+    async def get_equity(self, bot: BotConfig) -> float:
+        sess = await self._session_for(bot)
+        info = await sess.account_info()
+        return float(info["equity"]) if info else sess.equity
 
     # ── lifecycle ───────────────────────────────────────────────────────
 
@@ -179,21 +130,18 @@ class BotEngine:
         strategy_loader.ensure_strategies_dir()
         bots = {b["bot_id"]: b for b in db.get_all_virtual_bots()}
 
-        # Virtual bot masters have no terminal; the copier's startup connect
-        # attempt fails on them in live mode — mark them connected here.
         for bot_id in bots:
             state = self.router.masters.get(bot_id)
             if state:
+                from models import ConnectionStatus
                 state.status = ConnectionStatus.CONNECTED
                 state.error = None
 
-        # Kill tasks whose bot was deleted or disabled
         for bot_id in list(self.active_tasks.keys()):
             b = bots.get(bot_id)
             if not b or not b["enabled"]:
                 await self.kill_bot_task(bot_id)
 
-        # Boot tasks for enabled bots with an assigned strategy
         for bot_id, b in bots.items():
             if not b["enabled"] or bot_id in self.active_tasks:
                 continue
@@ -216,24 +164,32 @@ class BotEngine:
         except strategy_loader.StrategyLoadError as e:
             logger.warning(f"Bot {config.label}: strategy load failed — {e}")
             return
-        state = self.execution_states.setdefault(config.bot_id, {
-            "open_position": False, "last_direction": "NONE", "daily_pnl": 0.0,
-            "consecutive_losses": 0, "killed": False, "partial_closed": False,
-            "entry_price": None, "entry_volume": 0.0, "ticket": None, "status": "running",
-        })
-        # Reconcile against actual MT5 positions — never assume flat blindly.
-        # In simulation there is no terminal to ask: the in-memory state from
-        # setdefault above is the truth, so don't overwrite it with the mock's
-        # empty position list.
+
+        state = self.execution_states.get(config.bot_id)
+        if state is None:
+            state = BotRuntimeState()
+            # Restore durable safety state so a killed bot stays killed across restarts.
+            saved = db.load_bot_state(config.bot_id)
+            for k, v in saved.items():
+                if hasattr(state, k) and v is not None:
+                    setattr(state, k, v)
+            self.execution_states[config.bot_id] = state
+        self._reset_daily_if_needed(state)
+
+        # Reconcile against actual positions only in live mode; sim has no terminal
+        # to ask, so the persisted in-memory state is the truth.
         if MT5_AVAILABLE:
-            positions = await get_positions(config.magic_number)
-            state["open_position"] = len(positions) > 0
+            sess = await self._session_for(config)
+            positions = await sess.positions_get(magic=config.magic_number)
+            state.open_position = len(positions) > 0
             if positions:
-                state["entry_price"] = positions[0].price_open
-                state["entry_volume"] = positions[0].volume
-                state["ticket"] = positions[0].ticket
-                state["last_direction"] = "BUY" if positions[0].type == 0 else "SELL"
-        state["status"] = "running"
+                p = positions[0]
+                state.entry_price = p["price_open"]
+                state.entry_volume = p["volume"]
+                state.ticket = p["ticket"]
+                state.last_direction = "BUY" if p["type"] == 0 else "SELL"
+
+        state.status = "killed" if state.killed else "running"
         task = asyncio.create_task(self._run_strategy_loop(config, runtime),
                                    name=f"bot:{config.bot_id}")
         self.active_tasks[config.bot_id] = task
@@ -249,8 +205,14 @@ class BotEngine:
             except (asyncio.CancelledError, Exception):
                 pass
         if bot_id in self.execution_states:
-            self.execution_states[bot_id]["status"] = "stopped"
+            self.execution_states[bot_id].status = "stopped"
         logger.info(f"Bot task killed: {bot_id}")
+
+    def _persist(self, bot_id: str, state: BotRuntimeState):
+        try:
+            db.save_bot_state(bot_id, state.durable())
+        except Exception:
+            pass
 
     # ── main loop ───────────────────────────────────────────────────────
 
@@ -261,35 +223,36 @@ class BotEngine:
         while True:
             try:
                 self._reset_daily_if_needed(state)
-                if state["killed"]:
-                    state["status"] = "killed"
+                if state.killed:
+                    state.status = "killed"
                     await asyncio.sleep(poll)
                     continue
 
-                md = await fetch_rates(bot.symbol, bot.timeframe)
+                md = await self.fetch_rates(bot, bot.timeframe)
                 if not md:
                     logger.warning(f"Bot {bot.label}: no rates for {bot.symbol}")
                     await asyncio.sleep(poll)
                     continue
                 if trend_tf:
-                    trend_md = await fetch_rates(bot.symbol, trend_tf)
+                    trend_md = await self.fetch_rates(bot, trend_tf)
                     md["trend_close"] = trend_md["close"] if trend_md else None
-                md["state"] = {"open_position": state["open_position"],
-                               "last_direction": state["last_direction"]}
+                md["symbol"] = bot.symbol
+                md["state"] = {"open_position": state.open_position,
+                               "last_direction": state.last_direction}
 
                 direction = runtime.evaluate(md)
 
-                if state["open_position"]:
+                if state.open_position:
                     await self._manage_open_position(bot, runtime, md, state)
 
                 if direction in ("BUY", "SELL"):
-                    if (state["open_position"] and direction != state["last_direction"]
+                    if (state.open_position and direction != state.last_direction
                             and (runtime.blocks.get("position") or {}).get("reverse_on_signal")):
                         await self._close_position(bot, runtime, md["close"][-1], state,
                                                    reason="reverse signal")
-                    if not state["open_position"] and await self._risk_gates_pass(bot, runtime, state):
+                    if not state.open_position and await self._risk_gates_pass(bot, runtime, state):
                         await self._process_signal_action(bot, runtime, direction, md, state)
-                elif direction == "CLOSE" and state["open_position"]:
+                elif direction == "CLOSE" and state.open_position:
                     await self._close_position(bot, runtime, md["close"][-1], state, reason="strategy exit")
 
             except asyncio.CancelledError:
@@ -300,40 +263,61 @@ class BotEngine:
 
     # ── risk gates ──────────────────────────────────────────────────────
 
-    def _reset_daily_if_needed(self, state: dict):
-        today = date.today()
-        if today != self._today:
-            self._today = today
-            for s in self.execution_states.values():
-                s["daily_pnl"] = 0.0
-                s["consecutive_losses"] = 0
+    def _reset_daily_if_needed(self, state: BotRuntimeState):
+        today = _today_str()
+        self._today = today
+        if state.state_day != today:
+            state.state_day = today
+            state.daily_pnl = 0.0
+            state.consecutive_losses = 0
+            state.killed = False   # a fresh day clears a daily-loss kill
 
-    async def _risk_gates_pass(self, bot: BotConfig, runtime, state: dict) -> bool:
+    async def _risk_gates_pass(self, bot: BotConfig, runtime, state: BotRuntimeState) -> bool:
         risk = runtime.blocks.get("risk") or {}
-        equity = await get_equity()
+        equity = await self.get_equity(bot)
+
+        # Track peak equity for drawdown enforcement.
+        if equity > state.peak_equity:
+            state.peak_equity = equity
+            self._persist(bot.bot_id, state)
+
+        # Max drawdown from peak equity (persistent, not just intraday).
+        dd_pct = risk.get("max_drawdown_pct")
+        if dd_pct and state.peak_equity > 0:
+            drawdown = (state.peak_equity - equity) / state.peak_equity * 100.0
+            if drawdown >= dd_pct:
+                self._kill(bot, state, f"max drawdown {drawdown:.1f}% ≥ {dd_pct}%")
+                return False
+
         kill_pct = risk.get("kill_switch_pct")
-        if kill_pct and equity > 0 and state["daily_pnl"] <= -equity * kill_pct / 100.0:
-            state["killed"] = True
-            state["status"] = "killed"
-            logger.warning(f"Bot {bot.label}: KILL SWITCH tripped (daily pnl {state['daily_pnl']:.2f})")
-            notifier.notify_master_error(f"🤖 {bot.label}", bot.magic_number,
-                                         f"Kill switch tripped: daily PnL {state['daily_pnl']:.2f}")
+        if kill_pct and equity > 0 and state.daily_pnl <= -equity * kill_pct / 100.0:
+            self._kill(bot, state, f"kill switch: daily PnL {state.daily_pnl:.2f}")
             return False
+
         daily_limit = risk.get("daily_loss_limit_pct")
-        if daily_limit and equity > 0 and state["daily_pnl"] <= -equity * daily_limit / 100.0:
-            return False  # done trading for today, but not killed
+        if daily_limit and equity > 0 and state.daily_pnl <= -equity * daily_limit / 100.0:
+            return False  # done for today, not killed
+
         cooldown_n = risk.get("cooldown_after_losses")
-        if cooldown_n and state["consecutive_losses"] >= cooldown_n:
-            return False  # paused until daily reset
+        if cooldown_n and state.consecutive_losses >= cooldown_n:
+            return False
+
         max_concurrent = (runtime.blocks.get("position") or {}).get("max_concurrent", 1)
-        if state["open_position"] and max_concurrent <= 1:
+        if state.open_position and max_concurrent <= 1:
             return False
         return True
+
+    def _kill(self, bot: BotConfig, state: BotRuntimeState, reason: str):
+        state.killed = True
+        state.status = "killed"
+        self._persist(bot.bot_id, state)
+        logger.warning(f"Bot {bot.label}: KILLED — {reason}")
+        notifier.notify_master_error(f"🤖 {bot.label}", bot.magic_number, f"Bot killed: {reason}")
 
     # ── execution ───────────────────────────────────────────────────────
 
     async def _process_signal_action(self, bot: BotConfig, runtime, direction: str,
-                                     md: dict, state: dict):
+                                     md: dict, state: BotRuntimeState):
         price = md["close"][-1]
         exit_block = runtime.blocks.get("exit") or {}
         sl, tp = self._fixed_sltp(exit_block, direction, price, md)
@@ -345,15 +329,22 @@ class BotEngine:
                 volume=bot.base_volume, price=price, sl=sl, tp=tp,
                 magic_number=bot.magic_number, comment=f"OmniBot:{bot.label[:15]}",
             )
-            await self.router.route_signal(signal, time.perf_counter())
-            success, ticket = True, None
+            results = await self.router.route_signal(signal, time.perf_counter())
+            # Only consider ourselves in a position if a slave actually executed.
+            success = any(getattr(r, "success", False) for r in results)
+            ticket = next((r.order_ticket for r in results if getattr(r, "success", False)), None)
+            if not success:
+                logger.info(f"Bot {bot.label}: connected signal produced no fills — not entering")
         else:
             success, ticket = await self._standalone_open(bot, direction, price, sl, tp)
 
         if success:
-            state.update(open_position=True, last_direction=direction,
-                         partial_closed=False, entry_price=price,
-                         entry_volume=bot.base_volume, ticket=ticket)
+            state.open_position = True
+            state.last_direction = direction
+            state.partial_closed = False
+            state.entry_price = price
+            state.entry_volume = bot.base_volume
+            state.ticket = ticket
             db.log_strategy_result({
                 "result_id": str(uuid.uuid4())[:12], "strategy_id": bot.strategy_id,
                 "bot_id": bot.bot_id, "signal_direction": direction,
@@ -370,8 +361,7 @@ class BotEngine:
             )
 
     def _fixed_sltp(self, exit_block: dict, direction: str, price: float, md: dict):
-        """Fixed pip TP/SL from the exit block; 0 means none."""
-        pip = self._pip_size(md)
+        pip = instruments.pip_size(self._symbol(md))
         sl_pips, tp_pips = exit_block.get("sl_pips"), exit_block.get("tp_pips")
         sign = 1 if direction == "BUY" else -1
         sl = price - sign * sl_pips * pip if sl_pips else 0.0
@@ -379,63 +369,51 @@ class BotEngine:
         return round(sl, 5), round(tp, 5)
 
     @staticmethod
-    def _pip_size(md: dict) -> float:
-        """Infer pip size from price magnitude (no symbol_info in sim mode)."""
-        p = md["close"][-1]
-        if p > 500:
-            return 0.1      # gold, indices
-        if p > 20:
-            return 0.01     # JPY pairs, oil
-        return 0.0001       # forex majors
+    def _symbol(md: dict) -> str:
+        return md.get("symbol", "")
 
     async def _standalone_open(self, bot: BotConfig, direction: str, price: float,
                                sl: float, tp: float):
+        sess = await self._session_for(bot)
         req = {
-            "action": mt5.TRADE_ACTION_DEAL if MT5_AVAILABLE else "DEAL",
-            "symbol": bot.symbol, "volume": bot.base_volume,
-            "type": (mt5.ORDER_TYPE_BUY if direction == "BUY" else mt5.ORDER_TYPE_SELL)
-                    if MT5_AVAILABLE else direction,
-            "price": price, "sl": sl, "tp": tp,
-            "deviation": 10, "magic": bot.magic_number,
-            "comment": f"OmniBot:{bot.label[:15]}",
+            "action": "TRADE_ACTION_DEAL", "symbol": bot.symbol, "volume": bot.base_volume,
+            "type": "ORDER_TYPE_BUY" if direction == "BUY" else "ORDER_TYPE_SELL",
+            "price": price, "sl": sl, "tp": tp, "deviation": 10,
+            "magic": bot.magic_number, "comment": f"OmniBot:{bot.label[:15]}",
+            "type_time": "ORDER_TIME_GTC", "type_filling": "ORDER_FILLING_IOC",
         }
-        if MT5_AVAILABLE:
-            req["type_time"] = mt5.ORDER_TIME_GTC
-            req["type_filling"] = mt5.ORDER_FILLING_IOC
-        r = await send_order(req)
-        if r is None or r.retcode != (mt5.TRADE_RETCODE_DONE if MT5_AVAILABLE else 10009):
-            logger.error(f"Bot {bot.label}: order failed retcode="
-                         f"{getattr(r, 'retcode', None)}")
+        r = await sess.order_send(req)
+        if not r or r["retcode"] != RETCODE_DONE:
+            logger.error(f"Bot {bot.label}: order failed retcode={r.get('retcode') if r else None}")
             return False, None
-        return True, r.order
+        return True, r["order"]
 
     async def _close_position(self, bot: BotConfig, runtime, exit_price: float,
-                              state: dict, reason: str, volume: Optional[float] = None,
-                              partial: bool = False):
-        vol = volume or state["entry_volume"]
+                              state: BotRuntimeState, reason: str,
+                              volume: Optional[float] = None, partial: bool = False):
+        vol = volume or state.entry_volume
         if bot.mode == "connected":
             await self.router.route_close(bot.magic_number, bot.symbol)
         else:
-            close_dir = "SELL" if state["last_direction"] == "BUY" else "BUY"
+            sess = await self._session_for(bot)
+            close_dir = "SELL" if state.last_direction == "BUY" else "BUY"
             req = {
-                "action": mt5.TRADE_ACTION_DEAL if MT5_AVAILABLE else "DEAL",
-                "symbol": bot.symbol, "volume": vol,
-                "type": (mt5.ORDER_TYPE_SELL if close_dir == "SELL" else mt5.ORDER_TYPE_BUY)
-                        if MT5_AVAILABLE else close_dir,
+                "action": "TRADE_ACTION_DEAL", "symbol": bot.symbol, "volume": vol,
+                "type": "ORDER_TYPE_SELL" if close_dir == "SELL" else "ORDER_TYPE_BUY",
                 "price": exit_price, "deviation": 10, "magic": bot.magic_number,
                 "comment": "OmniBot:close",
+                "type_time": "ORDER_TIME_GTC", "type_filling": "ORDER_FILLING_IOC",
             }
-            if MT5_AVAILABLE:
-                req["position"] = state["ticket"]
-                req["type_time"] = mt5.ORDER_TIME_GTC
-                req["type_filling"] = mt5.ORDER_FILLING_IOC
-            await send_order(req)
+            if state.ticket:
+                req["position"] = state.ticket
+            await sess.order_send(req)
 
-        sign = 1 if state["last_direction"] == "BUY" else -1
-        entry = state["entry_price"] or exit_price
-        pnl = round((exit_price - entry) * sign * vol * self._contract_size(exit_price), 2)
-        state["daily_pnl"] += pnl
-        state["consecutive_losses"] = state["consecutive_losses"] + 1 if pnl < 0 else 0
+        sign = 1 if state.last_direction == "BUY" else -1
+        entry = state.entry_price or exit_price
+        pnl = round((exit_price - entry) * sign * vol * instruments.contract_size(bot.symbol), 2)
+        state.daily_pnl += pnl
+        state.consecutive_losses = state.consecutive_losses + 1 if pnl < 0 else 0
+        self._persist(bot.bot_id, state)
 
         db.log_strategy_result({
             "result_id": str(uuid.uuid4())[:12], "strategy_id": bot.strategy_id,
@@ -448,49 +426,42 @@ class BotEngine:
                     f"@ {exit_price:.5f} pnl={pnl:+.2f} ({reason})")
 
         if partial:
-            state["entry_volume"] = round(state["entry_volume"] - vol, 2)
-            state["partial_closed"] = True
+            state.entry_volume = round(state.entry_volume - vol, 2)
+            state.partial_closed = True
         else:
-            state.update(open_position=False, last_direction="NONE",
-                         entry_price=None, entry_volume=0.0, ticket=None,
-                         partial_closed=False)
-
-    @staticmethod
-    def _contract_size(price: float) -> float:
-        # rough notional per-lot multiplier so sim PnL is plausible
-        if price > 500:
-            return 100.0       # gold
-        if price > 20:
-            return 1000.0
-        return 100_000.0       # forex standard lot
+            state.open_position = False
+            state.last_direction = "NONE"
+            state.entry_price = None
+            state.entry_volume = 0.0
+            state.ticket = None
+            state.partial_closed = False
+            state.trail_sl = None
 
     # ── open-position management: partial close + trailing stop ────────
 
-    async def _manage_open_position(self, bot: BotConfig, runtime, md: dict, state: dict):
+    async def _manage_open_position(self, bot: BotConfig, runtime, md: dict, state: BotRuntimeState):
         price = md["close"][-1]
-        entry = state["entry_price"]
+        entry = state.entry_price
         if entry is None:
             return
-        sign = 1 if state["last_direction"] == "BUY" else -1
+        sign = 1 if state.last_direction == "BUY" else -1
         exit_block = runtime.blocks.get("exit") or {}
         pos_block = runtime.blocks.get("position") or {}
-        pip = self._pip_size(md)
+        pip = instruments.pip_size(bot.symbol)
 
-        # Partial close at R:R milestone — once per trade
         pc_pct, pc_rr = pos_block.get("partial_close_pct"), pos_block.get("partial_close_at_rr")
         sl_pips = exit_block.get("sl_pips")
-        if (pc_pct and pc_rr and sl_pips and not state["partial_closed"]
+        if (pc_pct and pc_rr and sl_pips and not state.partial_closed
                 and bot.mode == "standalone"):
             risk_dist = sl_pips * pip
             profit_dist = (price - entry) * sign
             if risk_dist > 0 and profit_dist / risk_dist >= pc_rr:
-                vol = round(state["entry_volume"] * pc_pct / 100.0, 2)
+                vol = round(state.entry_volume * pc_pct / 100.0, 2)
                 if vol >= 0.01:
                     await self._close_position(bot, runtime, price, state,
                                                reason=f"partial @ {pc_rr}RR",
                                                volume=vol, partial=True)
 
-        # Trailing stop
         if exit_block.get("trailing_stop"):
             if exit_block.get("trail_type", "atr") == "atr":
                 atr_series = strategy_loader.atr(md["high"], md["low"], md["close"], 14)
@@ -499,31 +470,28 @@ class BotEngine:
                 dist = (exit_block.get("trail_pips") or 20) * pip
             if dist > 0:
                 new_sl = round(price - sign * dist, 5)
-                cur_sl = state.get("trail_sl")
-                # only ratchet in the favorable direction
+                cur_sl = state.trail_sl
                 if cur_sl is None or (new_sl - cur_sl) * sign > 0:
-                    state["trail_sl"] = new_sl
+                    state.trail_sl = new_sl
                     await self._apply_trail_sl(bot, new_sl, state)
-            # trail breach → close
-            cur_sl = state.get("trail_sl")
+            cur_sl = state.trail_sl
             if cur_sl is not None and (price - cur_sl) * sign <= 0:
                 await self._close_position(bot, runtime, price, state, reason="trailing stop")
-                state.pop("trail_sl", None)
 
-    async def _apply_trail_sl(self, bot: BotConfig, new_sl: float, state: dict):
-        if not MT5_AVAILABLE or bot.mode == "connected" or not state.get("ticket"):
-            # sim / connected mode: trail enforced in-loop, no broker modify needed
-            return
-        req = {"action": mt5.TRADE_ACTION_SLTP, "symbol": bot.symbol,
-               "sl": new_sl, "tp": 0.0, "position": state["ticket"]}
-        await send_order(req)
+    async def _apply_trail_sl(self, bot: BotConfig, new_sl: float, state: BotRuntimeState):
+        if not MT5_AVAILABLE or bot.mode == "connected" or not state.ticket:
+            return  # sim / connected: trail enforced in-loop, no broker modify needed
+        sess = await self._session_for(bot)
+        req = {"action": "TRADE_ACTION_SLTP", "symbol": bot.symbol,
+               "sl": new_sl, "tp": 0.0, "position": state.ticket}
+        await sess.order_send(req)
 
     # ── status for the API/UI ───────────────────────────────────────────
 
     def get_bot_status(self, bot_id: str) -> dict:
         state = self.execution_states.get(bot_id)
         running = bot_id in self.active_tasks and not self.active_tasks[bot_id].done()
-        if state and state.get("killed"):
+        if state and state.killed:
             status = "killed"
         elif running:
             status = "running"
@@ -531,7 +499,7 @@ class BotEngine:
             status = "stopped"
         return {
             "status": status,
-            "open_position": state["open_position"] if state else False,
-            "daily_pnl": round(state["daily_pnl"], 2) if state else 0.0,
-            "consecutive_losses": state["consecutive_losses"] if state else 0,
+            "open_position": state.open_position if state else False,
+            "daily_pnl": round(state.daily_pnl, 2) if state else 0.0,
+            "consecutive_losses": state.consecutive_losses if state else 0,
         }
