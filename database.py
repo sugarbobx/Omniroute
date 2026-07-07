@@ -207,6 +207,31 @@ def load_all_masters() -> list[MasterAccount]:
     return [_row_to_master(r) for r in rows]
 
 
+def update_master(master_id: str, data: dict):
+    """Partial update of a master's editable columns."""
+    col_map = {
+        "label": "label", "login": "login", "password": "password",
+        "server": "server", "terminal_path": "terminal_path",
+        "magic_number": "magic_number", "symbol_map": "symbol_map_json",
+        "enabled": "enabled",
+    }
+    sets, vals = [], []
+    for key, col in col_map.items():
+        if key in data:
+            v = data[key]
+            if key == "symbol_map":
+                v = json.dumps(v)
+            elif isinstance(v, bool):
+                v = int(v)
+            sets.append(f"{col}=?")
+            vals.append(v)
+    if not sets:
+        return
+    vals.append(master_id)
+    with get_conn() as conn:
+        conn.execute(f"UPDATE masters SET {', '.join(sets)} WHERE master_id=?", vals)
+
+
 def delete_master(master_id: str):
     with get_conn() as conn:
         conn.execute("DELETE FROM masters WHERE master_id=?", (master_id,))
@@ -260,6 +285,33 @@ def update_slave_protection(account_id: str, protection: TradeProtection):
             "UPDATE slaves SET protection_json=? WHERE account_id=?",
             (protection.model_dump_json(), account_id),
         )
+
+
+def update_slave(account_id: str, data: dict):
+    """Partial update of a slave's editable columns."""
+    col_map = {
+        "label": "label", "login": "login", "password": "password",
+        "server": "server", "terminal_path": "terminal_path",
+        "lot_sizing_mode": "lot_sizing_mode", "fixed_lot": "fixed_lot",
+        "multiplier": "multiplier", "max_lot": "max_lot", "min_lot": "min_lot",
+        "max_open_trades": "max_open_trades", "symbol_map": "symbol_map_json",
+        "enabled": "enabled",
+    }
+    sets, vals = [], []
+    for key, col in col_map.items():
+        if key in data:
+            v = data[key]
+            if key == "symbol_map":
+                v = json.dumps(v)
+            elif isinstance(v, bool):
+                v = int(v)
+            sets.append(f"{col}=?")
+            vals.append(v)
+    if not sets:
+        return
+    vals.append(account_id)
+    with get_conn() as conn:
+        conn.execute(f"UPDATE slaves SET {', '.join(sets)} WHERE account_id=?", vals)
 
 
 def load_all_slaves() -> list[SlaveAccount]:

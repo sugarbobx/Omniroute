@@ -1,0 +1,25 @@
+OmniRoute deployment commands
+
+Windows
+1. cd C:\Omniroute
+2. .\venv\Scripts\python.exe deploy.py install
+3. .\venv\Scripts\python.exe deploy.py start --host 0.0.0.0 --port 8000 --firewall
+4. .\venv\Scripts\python.exe deploy.py status --port 8000
+5. .\venv\Scripts\python.exe deploy.py restart --host 0.0.0.0 --port 8000
+6. .\venv\Scripts\python.exe deploy.py stop
+
+Linux
+1. cd /path/to/Omniroute
+2. chmod +x deploy.sh
+3. ./deploy.sh install
+4. ./deploy.sh start --host 0.0.0.0 --port 8000
+5. ./deploy.sh status
+6. ./deploy.sh restart --host 0.0.0.0 --port 8000
+7. ./deploy.sh stop
+
+Direct Uvicorn run
+1. C:\Omniroute\venv\Scripts\python.exe -m uvicorn main:app --host 0.0.0.0 --port 8000 --lifespan off
+
+Notes
+1. Public access also requires port 8000 to be open in the cloud security group or firewall.
+2. Use --lifespan-on only if you want the full MT5/router startup path.

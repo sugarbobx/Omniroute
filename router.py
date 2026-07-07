@@ -176,6 +176,83 @@ class CopyRouter:
         await self.sessions.remove(account_id)
         return {"status": "removed", "account_id": account_id}
 
+    async def update_master(self, master_id: str, data: dict) -> dict:
+        if master_id not in self.masters:
+            return {"status": "not_found"}
+        db.update_master(master_id, data)
+        state = self.masters[master_id]
+        acc = state.account
+        for k, v in data.items():
+            if hasattr(acc, k):
+                setattr(acc, k, v)
+        if "magic_number" in data:
+            old_magic = next((mn for mn, mid in self._magic_index.items() if mid == master_id), None)
+            if old_magic is not None:
+                self._magic_index.pop(old_magic, None)
+            self._magic_index[acc.magic_number] = master_id
+        # Credentials may have changed — drop the stale session so a reconnect
+        # builds a fresh terminal with the new login/server.
+        await self.sessions.remove(master_id)
+        await self._connect_master(state)
+        return {"status": "updated", "master_id": master_id, "connected": state.status == ConnectionStatus.CONNECTED}
+
+    async def update_slave(self, account_id: str, data: dict) -> dict:
+        if account_id not in self.slaves:
+            return {"status": "not_found"}
+        db.update_slave(account_id, data)
+        state = self.slaves[account_id]
+        acc = state.account
+        for k, v in data.items():
+            if k == "lot_sizing_mode":
+                acc.lot_sizing_mode = LotSizingMode(v)
+            elif hasattr(acc, k):
+                setattr(acc, k, v)
+        await self.sessions.remove(account_id)
+        await self._connect_slave(state)
+        return {"status": "updated", "account_id": account_id, "connected": state.status == ConnectionStatus.CONNECTED}
+
+    async def ping_master(self, master_id: str) -> dict:
+        if master_id not in self.masters:
+            return {"status": "not_found"}
+        state = self.masters[master_id]
+        state.last_ping = datetime.utcnow()
+        return {"status": state.status.value, "equity": state.equity,
+                "last_ping": state.last_ping.isoformat()}
+
+    async def reconnect_master(self, master_id: str) -> dict:
+        if master_id not in self.masters:
+            return {"status": "not_found"}
+        state = self.masters[master_id]
+        state.status = ConnectionStatus.PENDING
+        state.error = None
+        await self.sessions.remove(master_id)
+        await self._connect_master(state)
+        return {"status": state.status.value, "master_id": master_id, "error": state.error}
+
+    async def reconnect_slave(self, account_id: str) -> dict:
+        if account_id not in self.slaves:
+            return {"status": "not_found"}
+        state = self.slaves[account_id]
+        state.status = ConnectionStatus.PENDING
+        state.error = None
+        await self.sessions.remove(account_id)
+        await self._connect_slave(state)
+        return {"status": state.status.value, "account_id": account_id, "error": state.error}
+
+    def get_provision_status(self, account_id: str) -> dict:
+        """Session-based provisioning status. Each account owns one terminal
+        session; 'done' means it is connected. (The prior multi-terminal build
+        exposed a multi-step provisioning flow — this preserves that endpoint
+        contract on the session architecture.)"""
+        state = self.slaves.get(account_id)
+        if not state:
+            return {"step": 0, "message": "Unknown", "done": False, "error": "not_found"}
+        if state.status == ConnectionStatus.CONNECTED:
+            return {"step": 3, "message": "Connected", "done": True, "error": None}
+        if state.status == ConnectionStatus.ERROR:
+            return {"step": 0, "message": "Connection error", "done": False, "error": state.error}
+        return {"step": 1, "message": state.status.value, "done": False, "error": None}
+
     def update_protection(self, account_id: str, protection: TradeProtection) -> dict:
         if account_id not in self.slaves:
             return {"status": "not_found"}
