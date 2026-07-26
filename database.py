@@ -7,6 +7,8 @@ v2.3: bot columns on masters, strategies + strategy_results tables
 import json
 import logging
 import sqlite3
+import hashlib
+import secrets
 from contextlib import contextmanager
 from datetime import datetime
 from pathlib import Path
@@ -135,6 +137,25 @@ def init_db():
                 mode             TEXT CHECK(mode IN ('forward_test', 'live')),
                 FOREIGN KEY(strategy_id) REFERENCES strategies(strategy_id) ON DELETE CASCADE
             );
+
+            CREATE TABLE IF NOT EXISTS app_users (
+                user_id       TEXT PRIMARY KEY,
+                username      TEXT NOT NULL UNIQUE,
+                display_name  TEXT NOT NULL,
+                password_hash TEXT NOT NULL,
+                role          TEXT NOT NULL DEFAULT 'admin',
+                enabled       INTEGER NOT NULL DEFAULT 1,
+                created_at    TEXT NOT NULL
+            );
+
+            CREATE TABLE IF NOT EXISTS app_sessions (
+                token        TEXT PRIMARY KEY,
+                user_id      TEXT NOT NULL,
+                created_at   TEXT NOT NULL,
+                last_seen_at TEXT NOT NULL,
+                expires_at   TEXT NOT NULL,
+                FOREIGN KEY(user_id) REFERENCES app_users(user_id) ON DELETE CASCADE
+            );
         """)
         # SQLite has no ALTER TABLE ... ADD COLUMN IF NOT EXISTS — check pragma first
         _ensure_column(conn, "masters", "is_virtual_bot", "INTEGER DEFAULT 0")
@@ -144,6 +165,7 @@ def init_db():
         _ensure_column(conn, "masters", "strategy_name", "TEXT")
         _ensure_column(conn, "masters", "forward_test", "INTEGER DEFAULT 0")
         _ensure_column(conn, "masters", "bot_mode", "TEXT DEFAULT 'standalone'")
+        _seed_demo_user(conn)
     logger.info(f"Database ready: {DB_PATH.resolve()}")
 
 
@@ -152,6 +174,110 @@ def _ensure_column(conn, table: str, col: str, decl: str):
     if col not in existing:
         conn.execute(f"ALTER TABLE {table} ADD COLUMN {col} {decl}")
         logger.info(f"Migration: added {table}.{col}")
+
+
+def _password_hash(password: str) -> str:
+    return hashlib.sha256(password.encode("utf-8")).hexdigest()
+
+
+def _seed_demo_user(conn):
+    rows = conn.execute("SELECT COUNT(*) AS n FROM app_users").fetchone()
+    if rows and rows["n"]:
+        return
+    conn.execute(
+        """
+        INSERT INTO app_users (user_id, username, display_name, password_hash, role, enabled, created_at)
+        VALUES (?, ?, ?, ?, ?, 1, ?)
+        """,
+        (
+            "demo-user",
+            "demo@omniroute.local",
+            "OmniRoute Demo",
+            _password_hash("TradeCopier123!"),
+            "admin",
+            datetime.utcnow().isoformat(),
+        ),
+    )
+
+
+def verify_app_user(username: str, password: str) -> Optional[dict]:
+    with get_conn() as conn:
+        row = conn.execute(
+            "SELECT * FROM app_users WHERE lower(username)=lower(?) AND enabled=1",
+            (username,),
+        ).fetchone()
+    if not row:
+        return None
+    if row["password_hash"] != _password_hash(password):
+        return None
+    return {
+        "user_id": row["user_id"],
+        "username": row["username"],
+        "display_name": row["display_name"],
+        "role": row["role"],
+    }
+
+
+def create_app_session(user_id: str, ttl_hours: int = 24 * 7) -> dict:
+    token = secrets.token_urlsafe(32)
+    now = datetime.utcnow()
+    expires = now.timestamp() + ttl_hours * 3600
+    expires_at = datetime.utcfromtimestamp(expires).isoformat()
+    with get_conn() as conn:
+        conn.execute(
+            """
+            INSERT INTO app_sessions (token, user_id, created_at, last_seen_at, expires_at)
+            VALUES (?, ?, ?, ?, ?)
+            """,
+            (token, user_id, now.isoformat(), now.isoformat(), expires_at),
+        )
+    return {"token": token, "expires_at": expires_at}
+
+
+def get_app_session(token: str) -> Optional[dict]:
+    with get_conn() as conn:
+        row = conn.execute(
+            """
+            SELECT s.token, s.user_id, s.created_at, s.last_seen_at, s.expires_at,
+                   u.username, u.display_name, u.role
+            FROM app_sessions s
+            JOIN app_users u ON u.user_id = s.user_id
+            WHERE s.token=? AND u.enabled=1
+            """,
+            (token,),
+        ).fetchone()
+    if not row:
+        return None
+    try:
+        if datetime.fromisoformat(row["expires_at"]) <= datetime.utcnow():
+            delete_app_session(token)
+            return None
+    except Exception:
+        delete_app_session(token)
+        return None
+    return {
+        "token": row["token"],
+        "user_id": row["user_id"],
+        "username": row["username"],
+        "display_name": row["display_name"],
+        "role": row["role"],
+        "created_at": row["created_at"],
+        "last_seen_at": row["last_seen_at"],
+        "expires_at": row["expires_at"],
+    }
+
+
+def touch_app_session(token: str):
+    with get_conn() as conn:
+        conn.execute(
+            "UPDATE app_sessions SET last_seen_at=? WHERE token=?",
+            (datetime.utcnow().isoformat(), token),
+        )
+
+
+def delete_app_session(token: str):
+    with get_conn() as conn:
+        conn.execute("DELETE FROM app_sessions WHERE token=?", (token,))
 
 
 # ── Masters ──────────────────────────────────────────────────────────────────

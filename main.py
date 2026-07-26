@@ -20,6 +20,7 @@ import uuid
 
 import uvicorn
 from fastapi import APIRouter, FastAPI, HTTPException, BackgroundTasks, Request, WebSocket, WebSocketDisconnect
+from fastapi.responses import FileResponse, JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 from typing import Optional as Opt
@@ -45,6 +46,7 @@ logger = logging.getLogger("main")
 
 router = CopyRouter()
 bot_engine = BotEngine(router)
+db.init_db()
 
 
 class WSManager:
@@ -62,6 +64,23 @@ class WSManager:
         for ws in dead: self.disconnect(ws)
 
 ws_manager = WSManager()
+
+
+class LoginRequest(BaseModel):
+    username: str
+    password: str
+
+
+def _session_from_request(request: Request) -> Optional[dict]:
+    token = request.headers.get("X-Session-Token") or request.headers.get("Authorization", "").removeprefix("Bearer ").strip()
+    if not token:
+        token = request.query_params.get("session_token")
+    if not token:
+        return None
+    session = db.get_app_session(token)
+    if session:
+        db.touch_app_session(token)
+    return session
 
 
 @asynccontextmanager
@@ -110,13 +129,19 @@ async def timing(request: Request, call_next):
 @app.middleware("http")
 async def api_auth(request: Request, call_next):
     secret = settings.api_secret
+    public_paths = (
+        "/", "/health", "/docs", "/openapi.json", "/redoc",
+        "/favicon.svg", "/omniroute-logo.svg", "/omniroute-icon-512.svg",
+        "/auth/login", "/auth/me", "/auth/logout",
+    )
     if secret:
-        # Skip auth for health check and docs
-        if request.url.path not in ("/health", "/docs", "/openapi.json", "/redoc"):
+        if request.url.path not in public_paths:
             token = request.headers.get("X-API-Key") or request.query_params.get("api_key")
-            if token != secret:
-                from fastapi.responses import JSONResponse
+            if token != secret and not _session_from_request(request):
                 return JSONResponse({"detail": "Unauthorized"}, status_code=401)
+    else:
+        if request.url.path not in public_paths and not _session_from_request(request):
+            return JSONResponse({"detail": "Unauthorized"}, status_code=401)
     return await call_next(request)
 
 
@@ -126,6 +151,36 @@ async def api_auth(request: Request, call_next):
 async def health():
     return {"status": "healthy", "app": "OmniRoute", "version": "2.2.0",
             "masters": len(router.masters), "slaves": len(router.slaves)}
+
+
+@app.post("/auth/login", tags=["Auth"])
+async def auth_login(req: LoginRequest):
+    user = db.verify_app_user(req.username.strip(), req.password)
+    if not user:
+        raise HTTPException(401, "Invalid credentials")
+    session = db.create_app_session(user["user_id"])
+    return {
+        "status": "ok",
+        "user": user,
+        "session_token": session["token"],
+        "expires_at": session["expires_at"],
+    }
+
+
+@app.get("/auth/me", tags=["Auth"])
+async def auth_me(request: Request):
+    session = _session_from_request(request)
+    if not session:
+        raise HTTPException(401, "Not authenticated")
+    return {"authenticated": True, "user": session}
+
+
+@app.post("/auth/logout", tags=["Auth"])
+async def auth_logout(request: Request):
+    session = _session_from_request(request)
+    if session:
+        db.delete_app_session(session["token"])
+    return {"status": "ok"}
 
 
 # ── Trade signals ─────────────────────────────────────────────────────────────
@@ -717,8 +772,6 @@ async def ws_status(ws: WebSocket):
 
 if __name__ == "__main__":
     uvicorn.run("main:app", host="0.0.0.0", port=8000, reload=False, workers=1)
-
-from fastapi.responses import FileResponse
 
 @app.get("/")
 def root():

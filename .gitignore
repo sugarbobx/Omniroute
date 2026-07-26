@@ -5,6 +5,13 @@ copybridge.db
 copybridge.db-*
 verify_shots/
 logs_tmp.json
+.claude/
+graphify-out/
+venv/
+fix.py
+node_installer.msi
+uvicorn_err.txt
+uvicorn_out.txt
 # user-created strategy files are runtime data, not source
 strategies/*
 !strategies/__init__.py

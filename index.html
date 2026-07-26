@@ -48,7 +48,119 @@ body{min-height:100%;background:var(--bg);color:var(--text);font-family:var(--sa
 .q-item::before{content:'◆';color:var(--blue);font-size:8px;opacity:.6;}
 
 /* ── LAYOUT ──────────────────────────────────────────────────────────── */
-#app{position:relative;z-index:1;display:flex;flex-direction:column;min-height:100vh;padding-bottom:32px;}
+#app{position:relative;z-index:1;display:none;flex-direction:column;min-height:100vh;padding-bottom:32px;}
+#quote-strip{display:none;}
+body.authenticated #app{display:flex;}
+body.authenticated #quote-strip{display:flex;}
+
+/* â”€â”€ AUTH LANDING â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */
+#auth-shell{
+  position:fixed;
+  inset:0;
+  z-index:120;
+  display:flex;
+  align-items:stretch;
+  justify-content:center;
+  padding:28px;
+  background:
+    radial-gradient(circle at top left, rgba(0,112,243,.16), transparent 28%),
+    radial-gradient(circle at bottom right, rgba(0,214,143,.08), transparent 26%),
+    linear-gradient(180deg, rgba(5,7,10,.92), rgba(5,7,10,.98));
+}
+#auth-shell::before{
+  content:'';
+  position:absolute;
+  inset:0;
+  background-image:linear-gradient(rgba(255,255,255,.02) 1px, transparent 1px), linear-gradient(90deg, rgba(255,255,255,.02) 1px, transparent 1px);
+  background-size:36px 36px;
+  mask-image:radial-gradient(circle at center, black 30%, transparent 78%);
+  pointer-events:none;
+  opacity:.5;
+}
+.auth-wrap{
+  position:relative;
+  z-index:1;
+  width:min(1120px,100%);
+  display:grid;
+  grid-template-columns:1.2fr .8fr;
+  gap:18px;
+  align-items:center;
+}
+.auth-hero,
+.auth-card{
+  background:rgba(8,12,18,.9);
+  border:1px solid var(--border);
+  border-radius:16px;
+  box-shadow:0 24px 60px rgba(0,0,0,.55);
+  backdrop-filter:blur(16px);
+}
+.auth-hero{
+  padding:28px;
+  min-height:540px;
+  display:flex;
+  flex-direction:column;
+  justify-content:space-between;
+  gap:24px;
+}
+.auth-brand-row{display:flex;align-items:center;gap:12px;flex-wrap:wrap;}
+.auth-title{font-family:var(--mono);font-size:28px;font-weight:700;letter-spacing:-.6px;color:#fff;}
+.auth-title span{color:var(--blue-bright);}
+.auth-copy{max-width:56ch;color:var(--text2);font-size:15px;line-height:1.7;}
+.auth-pill-row{display:flex;gap:8px;flex-wrap:wrap;}
+.auth-demo-box{
+  margin-top:auto;
+  padding:16px 18px;
+  border:1px solid rgba(0,112,243,.18);
+  border-radius:12px;
+  background:rgba(0,112,243,.06);
+  color:var(--text);
+  font-family:var(--mono);
+  font-size:12px;
+  line-height:1.7;
+}
+.auth-demo-box .label{display:block;color:var(--blue-bright);text-transform:uppercase;letter-spacing:.8px;font-size:10px;margin-bottom:4px;}
+.auth-card{
+  padding:24px;
+  display:flex;
+  flex-direction:column;
+  gap:14px;
+}
+.auth-card-head{
+  display:flex;
+  align-items:center;
+  justify-content:space-between;
+  gap:12px;
+}
+.auth-card-title{font-size:18px;font-weight:700;color:#fff;}
+.auth-card-sub{font-family:var(--mono);font-size:10px;color:var(--text3);text-transform:uppercase;letter-spacing:.8px;}
+.auth-field{display:flex;flex-direction:column;gap:4px;}
+.auth-btn{width:100%;padding:11px 14px;font-size:13px;}
+.auth-hint{
+  font-family:var(--mono);
+  font-size:10px;
+  color:var(--text3);
+  line-height:1.7;
+  background:rgba(255,255,255,.02);
+  border:1px solid var(--border);
+  border-radius:10px;
+  padding:12px;
+}
+.auth-error{
+  display:none;
+  border:1px solid rgba(255,59,92,.22);
+  background:rgba(255,59,92,.08);
+  color:#ff9fb0;
+  border-radius:10px;
+  padding:10px 12px;
+  font-family:var(--mono);
+  font-size:11px;
+  line-height:1.6;
+}
+@media(max-width:900px){
+  #auth-shell{padding:16px;}
+  .auth-wrap{grid-template-columns:1fr;}
+  .auth-hero{min-height:auto;padding:22px;}
+}
 
 /* ── HEADER ──────────────────────────────────────────────────────────── */
 header{
@@ -460,6 +572,63 @@ select.fi option{background:var(--bg2);}
 
 <!-- ── ANIMATED BACKGROUND ─────────────────────────────────────────────── -->
 <canvas id="bg-canvas"></canvas>
+
+<div id="auth-shell">
+  <div class="auth-wrap">
+    <div class="auth-hero">
+      <div>
+        <div class="auth-brand-row">
+          <div class="logo-mark" style="width:40px;height:40px;font-size:15px;border-radius:10px;background:linear-gradient(135deg,#0070f3,#0040c0);box-shadow:0 0 28px rgba(0,112,243,.45);">OR</div>
+          <div>
+            <div class="auth-title">Omni<span>Route</span></div>
+            <div class="auth-card-sub">Trade copier control plane</div>
+          </div>
+        </div>
+        <p class="auth-copy" style="margin-top:22px;">
+          Sign in to reach the bridge dashboard and manage copy-trading operations.
+        </p>
+        <div class="auth-pill-row" style="margin-top:18px;">
+          <span class="tag tag-blue">First login</span>
+          <span class="tag tag-green">Demo access</span>
+          <span class="tag tag-gray">Public IP entry point</span>
+        </div>
+      </div>
+      <div class="auth-demo-box" style="font-size:11px;line-height:1.7;color:var(--text2);max-width:420px;">
+        <span class="label">Seeded access</span>
+        <div>Use the prefilled credentials below for the first login.</div>
+        <div style="margin-top:6px;color:var(--text3);">
+          demo@omniroute.local / TradeCopier123!
+        </div>
+      </div>
+    </div>
+
+    <div class="auth-card">
+      <div class="auth-card-head">
+        <div>
+          <div class="auth-card-title">Sign in</div>
+          <div class="auth-card-sub">Use your bridge credentials</div>
+        </div>
+      </div>
+
+      <div class="auth-field">
+        <label class="fl" for="auth-username">Username</label>
+        <input class="fi" id="auth-username" autocomplete="username" value="demo@omniroute.local" placeholder="demo@omniroute.local"/>
+      </div>
+      <div class="auth-field">
+        <label class="fl" for="auth-password">Password</label>
+        <div class="pw-wrap">
+          <input class="fi" id="auth-password" type="password" autocomplete="current-password" value="TradeCopier123!" placeholder="••••••••"/>
+          <button class="pw-toggle" type="button" onclick="togglePw('auth-password',this)" aria-label="Show/hide password">👁</button>
+        </div>
+      </div>
+      <button class="btn btn-primary auth-btn" id="auth-login-btn" onclick="submitLogin()">Sign in</button>
+      <div id="auth-error" class="auth-error"></div>
+      <div class="auth-hint">
+        The page loads here first on the public IP. After sign-in, the bridge dashboard opens in the same session.
+      </div>
+    </div>
+  </div>
+</div>
 
 <div id="app">
 
@@ -1511,12 +1680,18 @@ const QUOTES = [
 // ══════════════════════════════════════════════════════════════════════
 // APP STATE
 // ══════════════════════════════════════════════════════════════════════
-let BRIDGE='http://127.0.0.1:8000', ws=null, wsActive=false, _cdTimer=null;
+const APP_ORIGIN = window.location.origin;
+const AUTH_TOKEN_KEY = 'omni_session_token';
+const AUTH_USER_KEY = 'omni_session_user';
+let BRIDGE=APP_ORIGIN, ws=null, wsActive=false, _cdTimer=null;
 let logTab='all', localLogs=[], symMap={}, currentRole='master';
 let mastersData=[], slavesData=[];
 const equityHistory = {};
 let _linkMasterId=null, _confirmCb=null;
 const sbState={guide:true,cfg:true,add:true,sym:false};
+let authUser=null;
+let _appBootstrapped=false;
+let _pollTimer=null;
 
 // Clock
 setInterval(()=>{ document.getElementById('clock').textContent=new Date().toUTCString().slice(17,25); },1000);
@@ -1538,6 +1713,112 @@ function setRole(r){
   document.getElementById('role-slave').classList.toggle('active',r==='slave');
   document.getElementById('master-fields').style.display=r==='master'?'block':'none';
   document.getElementById('slave-fields').style.display=r==='slave'?'block':'none';
+}
+
+function showAuthError(message){
+  const el=document.getElementById('auth-error');
+  if(!el) return;
+  el.textContent=message;
+  el.style.display='block';
+}
+
+function clearAuthError(){
+  const el=document.getElementById('auth-error');
+  if(!el) return;
+  el.textContent='';
+  el.style.display='none';
+}
+
+function showAuthShell(message=''){
+  document.body.classList.remove('authenticated');
+  const shell=document.getElementById('auth-shell');
+  if(shell) shell.style.display='flex';
+  if(message) showAuthError(message);
+}
+
+function hideAuthShell(){
+  const shell=document.getElementById('auth-shell');
+  if(shell) shell.style.display='none';
+  document.body.classList.add('authenticated');
+}
+
+async function submitLogin(){
+  const username=document.getElementById('auth-username').value.trim();
+  const password=document.getElementById('auth-password').value;
+  if(!username||!password){
+    showAuthError('Enter both username and password.');
+    return;
+  }
+  const btn=document.getElementById('auth-login-btn');
+  await withBtn(btn,'Signing in…',async()=>{
+    clearAuthError();
+    const r=await fetch('/auth/login',{
+      method:'POST',
+      headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({username,password}),
+    });
+    const text=await r.text();
+    if(!r.ok) throw new Error(text||`HTTP ${r.status}`);
+    const data=JSON.parse(text);
+    try{
+      localStorage.setItem(AUTH_TOKEN_KEY,data.session_token);
+      localStorage.setItem(AUTH_USER_KEY,JSON.stringify(data.user||{}));
+    }catch(e){}
+    authUser=data.user||null;
+    hideAuthShell();
+    bootstrapApp();
+  }).catch(err=>{
+    showAuthError(err.message||'Login failed.');
+  });
+}
+
+async function restoreSession(){
+  const token=localStorage.getItem(AUTH_TOKEN_KEY);
+  if(!token) return false;
+  try{
+    const r=await fetch('/auth/me',{headers:{'X-Session-Token':token}});
+    if(!r.ok) throw new Error('session invalid');
+    const data=await r.json();
+    authUser=data.user||JSON.parse(localStorage.getItem(AUTH_USER_KEY)||'null');
+    hideAuthShell();
+    return true;
+  }catch(_){
+    try{
+      localStorage.removeItem(AUTH_TOKEN_KEY);
+      localStorage.removeItem(AUTH_USER_KEY);
+    }catch(e){}
+    authUser=null;
+    showAuthShell();
+    return false;
+  }
+}
+
+function bootstrapApp(){
+  const savedKey = localStorage.getItem('omni_api_key');
+  const cfgUrlEl = document.getElementById('cfg-url');
+  const cfgKeyEl = document.getElementById('cfg-apikey');
+  const bridgeUrl = APP_ORIGIN.replace(/\/$/,'');
+  BRIDGE = bridgeUrl;
+  if (cfgUrlEl) cfgUrlEl.value = bridgeUrl;
+  if (savedKey && cfgKeyEl) cfgKeyEl.value = savedKey;
+  if (_appBootstrapped) {
+    connectBridge();
+    return;
+  }
+  _appBootstrapped = true;
+  renderMasters(); renderSlaves(); renderLog();
+  loadEventPrefs();
+  showPreview('copied');
+  connectBridge();
+  if(_pollTimer) clearInterval(_pollTimer);
+  _pollTimer = setInterval(()=>{
+    if(!wsActive) refreshAll();
+    else apiFetch('/logs?limit=400').then(logs=>{localLogs=logs;renderLog();}).catch(()=>{});
+  },3000);
+  if (window._omniBound) return;
+  window._omniBound = true;
+  const cfgUrl = document.getElementById('cfg-url');
+  if (cfgUrl) cfgUrl.addEventListener('change',e=>{ BRIDGE=e.target.value.replace(/\/$/,''); });
 }
 
 // ══════════════════════════════════════════════════════════════════════
@@ -2000,8 +2281,14 @@ async function apiFetch(path,method='GET',body=null){
   const opts={method,headers:{'Content-Type':'application/json'}};
   const key=document.getElementById('cfg-apikey')?.value;
   if(key) opts.headers['X-API-Key']=key;
+  const token=localStorage.getItem(AUTH_TOKEN_KEY);
+  if(token) opts.headers['X-Session-Token']=token;
   if(body) opts.body=JSON.stringify(body);
   const r=await fetch(BRIDGE+path,opts);
+  if(r.status===401){
+    showAuthShell('Your session expired. Sign in again.');
+    throw new Error('Unauthorized');
+  }
   if(!r.ok){ const t=await r.text(); throw new Error(`HTTP ${r.status}: ${t.slice(0,120)}`); }
   return r.json();
 }
@@ -2730,7 +3017,7 @@ document.addEventListener('keydown',e=>{
 try {
   const savedUrl = localStorage.getItem('omni_bridge_url');
   const savedKey = localStorage.getItem('omni_api_key');
-  if (savedUrl) { document.getElementById('cfg-url').value = savedUrl; BRIDGE = savedUrl.replace(/\/$/,''); }
+  if (savedUrl) document.getElementById('cfg-url').value = savedUrl;
   if (savedKey) document.getElementById('cfg-apikey').value = savedKey;
 } catch(e) {}
 
@@ -3242,15 +3529,10 @@ async function reconnectSlave(id, btn){
   finally{ btn.disabled=false; btn.textContent=orig; }
 }
 
-document.getElementById('cfg-url').addEventListener('change',e=>{ BRIDGE=e.target.value.replace(/\/$/,''); });
-setInterval(()=>{
-  if(!wsActive) refreshAll();
-  else apiFetch('/logs?limit=400').then(logs=>{localLogs=logs;renderLog();}).catch(()=>{});
-},3000);
-renderMasters(); renderSlaves(); renderLog();
-loadEventPrefs();
-showPreview('copied');
-connectBridge();
+showAuthShell();
+restoreSession().then(ok=>{
+  if(ok) bootstrapApp();
+});
 </script>
 </body>
 </html>
