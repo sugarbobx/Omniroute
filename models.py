@@ -128,16 +128,18 @@ class SlippageCheckResult(BaseModel):
 # ── Master Account ────────────────────────────────────────────────────────────
 
 class MasterAccount(BaseModel):
-    master_id:     str = Field(default_factory=lambda: str(uuid.uuid4())[:8])
-    label:         str = Field(...)
-    login:         int = Field(...)
-    password:      str = Field(...)
-    server:        str = Field(...)
-    terminal_path: str = Field("C:\\Program Files\\MetaTrader 5\\terminal64.exe")
-    magic_number:  int = Field(...)
-    symbol_map:    dict[str, str] = Field(default_factory=dict)
-    enabled:       bool = True
-    created_at:    datetime = Field(default_factory=datetime.utcnow)
+    master_id:          str = Field(default_factory=lambda: str(uuid.uuid4())[:8])
+    label:              str = Field(...)
+    login:              int = Field(...)
+    password:           str = Field(...)
+    investor_password:  str = Field("", description="Read-only investor password for the watcher session")
+    server:             str = Field(...)
+    # terminal_path is managed internally by provisioning.py — never from user input
+    terminal_path:      str = Field("C:\\Program Files\\MetaTrader 5\\terminal64.exe")
+    magic_number:       int = Field(...)
+    symbol_map:         dict[str, str] = Field(default_factory=dict)
+    enabled:            bool = True
+    created_at:         datetime = Field(default_factory=datetime.utcnow)
 
     @field_validator("label")
     @classmethod
@@ -155,6 +157,7 @@ class SlaveAccount(BaseModel):
     login:         int = Field(...)
     password:      str = Field(...)
     server:        str = Field(...)
+    # terminal_path is managed internally by provisioning.py — never from user input
     terminal_path: str = Field("C:\\Program Files\\MetaTrader 5\\terminal64.exe")
 
     master_ids:    list[str] = Field(default_factory=list)
@@ -190,21 +193,22 @@ class SlaveAccount(BaseModel):
 # ── Unified account creation ──────────────────────────────────────────────────
 
 class AddAccountRequest(BaseModel):
-    role:          AccountRole
-    label:         str
-    login:         int
-    password:      str
-    server:        str
-    terminal_path: str = "C:\\Program Files\\MetaTrader 5\\terminal64.exe"
-    magic_number:  Optional[int]  = None
-    symbol_map:    dict[str, str] = Field(default_factory=dict)
-    lot_sizing_mode: LotSizingMode = LotSizingMode.EQUITY_RATIO
-    fixed_lot:     float = 0.01
-    multiplier:    float = 1.0
-    max_lot:       float = 10.0
-    min_lot:       float = 0.01
-    max_open_trades: int = 20
-    protection:    TradeProtection = Field(default_factory=TradeProtection)
+    role:              AccountRole
+    label:             str
+    login:             int
+    password:          str
+    investor_password: str = ""   # master only; read-only password for the watcher
+    server:            str
+    # terminal_path intentionally removed from user-facing API
+    magic_number:      Optional[int]  = None
+    symbol_map:        dict[str, str] = Field(default_factory=dict)
+    lot_sizing_mode:   LotSizingMode = LotSizingMode.EQUITY_RATIO
+    fixed_lot:         float = 0.01
+    multiplier:        float = 1.0
+    max_lot:           float = 10.0
+    min_lot:           float = 0.01
+    max_open_trades:   int = 20
+    protection:        TradeProtection = Field(default_factory=TradeProtection)
 
 
 # ── Linking ───────────────────────────────────────────────────────────────────

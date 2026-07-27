@@ -67,8 +67,9 @@ ws_manager = WSManager()
 
 
 class LoginRequest(BaseModel):
-    username: str
-    password: str
+    username:       str
+    password:       str
+    stay_signed_in: bool = False   # True → 7-day session; False → 24h session
 
 
 def _trade_intent_key(kind: str, *parts: object) -> str:
@@ -133,42 +134,75 @@ async def timing(request: Request, call_next):
 
 @app.middleware("http")
 async def api_auth(request: Request, call_next):
-    secret = settings.api_secret
     public_paths = (
         "/", "/health", "/docs", "/openapi.json", "/redoc",
         "/favicon.svg", "/omniroute-logo.svg", "/omniroute-icon-512.svg",
         "/auth/login", "/auth/me", "/auth/logout",
+        "/setup/status", "/setup/create-admin",
     )
+    if request.url.path in public_paths or request.url.path.startswith("/ws/"):
+        return await call_next(request)
+    # Session-based auth for browser clients (X-API-Key retained only for
+    # server-to-server integrations if API_SECRET is configured)
+    if _session_from_request(request):
+        return await call_next(request)
+    secret = settings.api_secret
     if secret:
-        if request.url.path not in public_paths:
-            token = request.headers.get("X-API-Key") or request.query_params.get("api_key")
-            if token != secret and not _session_from_request(request):
-                return JSONResponse({"detail": "Unauthorized"}, status_code=401)
-    else:
-        if request.url.path not in public_paths and not _session_from_request(request):
-            return JSONResponse({"detail": "Unauthorized"}, status_code=401)
-    return await call_next(request)
+        token = request.headers.get("X-API-Key") or request.query_params.get("api_key")
+        if token == secret:
+            return await call_next(request)
+    return JSONResponse({"detail": "Unauthorized"}, status_code=401)
+
+
+# ── First-run setup ───────────────────────────────────────────────────────────
+
+class SetupRequest(BaseModel):
+    username:     str
+    display_name: str
+    password:     str
+
+
+@app.get("/setup/status", tags=["Setup"])
+async def setup_status():
+    """Returns whether initial admin setup is still required."""
+    return {"needs_setup": db.needs_first_run_setup()}
+
+
+@app.post("/setup/create-admin", tags=["Setup"])
+async def setup_create_admin(req: SetupRequest):
+    """Create the first admin user. Fails if an admin already exists."""
+    if not db.needs_first_run_setup():
+        raise HTTPException(409, "Admin user already exists. Use the login endpoint.")
+    if len(req.password) < 10:
+        raise HTTPException(400, "Password must be at least 10 characters")
+    result = db.create_first_admin(req.username, req.display_name, req.password)
+    return {"status": "created", **result}
 
 
 # ── Health ────────────────────────────────────────────────────────────────────
 
 @app.get("/health", tags=["Health"])
 async def health():
-    return {"status": "healthy", "app": "OmniRoute", "version": "2.2.0",
-            "masters": len(router.masters), "slaves": len(router.slaves)}
+    return {"status": "healthy", "app": "OmniRoute", "version": "2.4.0",
+            "masters": len(router.masters), "slaves": len(router.slaves),
+            "needs_setup": db.needs_first_run_setup()}
 
 
 @app.post("/auth/login", tags=["Auth"])
 async def auth_login(req: LoginRequest):
+    if db.needs_first_run_setup():
+        raise HTTPException(403, "Admin setup required. POST /setup/create-admin first.")
     user = db.verify_app_user(req.username.strip(), req.password)
     if not user:
         raise HTTPException(401, "Invalid credentials")
-    session = db.create_app_session(user["user_id"])
+    ttl = 24 * 7 if req.stay_signed_in else 24
+    session = db.create_app_session(user["user_id"], ttl_hours=ttl)
     return {
         "status": "ok",
         "user": user,
         "session_token": session["token"],
         "expires_at": session["expires_at"],
+        "stay_signed_in": req.stay_signed_in,
     }
 
 
@@ -282,35 +316,40 @@ async def trade_modify(modify: ModifySignal, background_tasks: BackgroundTasks):
 # ── Accounts ──────────────────────────────────────────────────────────────────
 
 @app.post("/account", tags=["Accounts"])
-async def add_account(req: AddAccountRequest):
+async def add_account(req: AddAccountRequest, request: Request):
+    session = _session_from_request(request)
+    owner_id = session["user_id"] if session else None
     if req.role == AccountRole.MASTER:
         if req.magic_number is None:
             raise HTTPException(400, "magic_number required for master")
+        # terminal_path is assigned by provisioning — users never set it
         account = MasterAccount(
-            label=req.label, login=req.login, password=req.password, server=req.server,
-            terminal_path=req.terminal_path, magic_number=req.magic_number, symbol_map=req.symbol_map,
+            label=req.label, login=req.login, password=req.password,
+            investor_password=req.investor_password,
+            server=req.server, magic_number=req.magic_number, symbol_map=req.symbol_map,
         )
-        return await router.add_master(account)
+        return await router.add_master(account, owner_user_id=owner_id)
     else:
         account = SlaveAccount(
             label=req.label, login=req.login, password=req.password, server=req.server,
-            terminal_path=req.terminal_path, lot_sizing_mode=req.lot_sizing_mode,
-            fixed_lot=req.fixed_lot, multiplier=req.multiplier, max_lot=req.max_lot,
-            min_lot=req.min_lot, max_open_trades=req.max_open_trades, protection=req.protection,
+            lot_sizing_mode=req.lot_sizing_mode, fixed_lot=req.fixed_lot,
+            multiplier=req.multiplier, max_lot=req.max_lot, min_lot=req.min_lot,
+            max_open_trades=req.max_open_trades, protection=req.protection,
         )
-        return await router.add_slave(account)
+        return await router.add_slave(account, owner_user_id=owner_id)
 
 
 # ── Masters ───────────────────────────────────────────────────────────────────
 
 class UpdateMasterRequest(BaseModel):
-    label:         Optional[str]   = None
-    login:         Optional[int]   = None
-    password:      Optional[str]   = None
-    server:        Optional[str]   = None
-    terminal_path: Optional[str]   = None
-    magic_number:  Optional[int]   = None
-    symbol_map:    Optional[dict]  = None
+    label:             Optional[str]   = None
+    login:             Optional[int]   = None
+    password:          Optional[str]   = None      # blank → don't change
+    investor_password: Optional[str]   = None      # blank → don't change
+    server:            Optional[str]   = None
+    magic_number:      Optional[int]   = None
+    symbol_map:        Optional[dict]  = None
+    # terminal_path intentionally excluded from user-facing update
 
 
 class UpdateSlaveRequest(BaseModel):
@@ -379,6 +418,16 @@ async def reconnect_master(master_id: str):
     if result.get("status") == "not_found": raise HTTPException(404)
     return result
 
+@app.post("/masters/{master_id}/disable", tags=["Masters"])
+async def disable_master(master_id: str):
+    """Disable a master (keeps audit trail, stops watcher)."""
+    if master_id not in router.masters:
+        raise HTTPException(404)
+    router._stop_watcher(master_id)
+    router.masters[master_id].account.enabled = False
+    db.disable_account(master_id)
+    return {"status": "disabled", "master_id": master_id}
+
 
 # ── Slaves ────────────────────────────────────────────────────────────────────
 
@@ -431,6 +480,16 @@ async def reconnect_slave(account_id: str):
     result = await router.reconnect_slave(account_id)
     if result.get("status") == "not_found": raise HTTPException(404)
     return result
+
+@app.post("/slaves/{account_id}/disable", tags=["Slaves"])
+async def disable_slave(account_id: str):
+    """Disable a slave (keeps audit trail, stops worker)."""
+    if account_id not in router.slaves:
+        raise HTTPException(404)
+    router._stop_worker_task(account_id)
+    router.slaves[account_id].account.enabled = False
+    db.disable_account(account_id)
+    return {"status": "disabled", "account_id": account_id}
 
 @app.get("/slaves/{account_id}/provision_status", tags=["Slaves"])
 async def provision_status(account_id: str):

@@ -1,19 +1,19 @@
 """
-database.py — OmniRoute v2.3
-Added: protection_json column on slaves, modify_log table
-v2.3: bot columns on masters, strategies + strategy_results tables
+database.py — OmniRoute v2.4
+v2.4: bcrypt app-user hashing, DPAPI broker-password encryption, owner_user_id
+      scaffolding, watcher_baseline table, first-run detection.
 """
 
 import json
 import logging
 import sqlite3
-import hashlib
 import secrets
 from contextlib import contextmanager
 from datetime import datetime
 from pathlib import Path
 from typing import Optional
 
+import crypto
 from models import MasterAccount, SlaveAccount, TradeProtection
 
 logger = logging.getLogger("database")
@@ -247,6 +247,16 @@ def init_db():
                 expires_at   TEXT NOT NULL,
                 FOREIGN KEY(user_id) REFERENCES app_users(user_id) ON DELETE CASCADE
             );
+
+            -- Baseline snapshot taken at watcher startup so pre-existing
+            -- master positions are never emitted as new trade intents.
+            CREATE TABLE IF NOT EXISTS watcher_baseline (
+                master_id    TEXT NOT NULL,
+                ticket       INTEGER NOT NULL,
+                snapshot_json TEXT NOT NULL,
+                created_at   TEXT NOT NULL,
+                PRIMARY KEY (master_id, ticket)
+            );
         """)
         # SQLite has no ALTER TABLE ... ADD COLUMN IF NOT EXISTS — check pragma first
         _ensure_column(conn, "masters", "is_virtual_bot", "INTEGER DEFAULT 0")
@@ -262,7 +272,18 @@ def init_db():
         _ensure_column(conn, "trade_jobs", "finished_at", "TEXT")
         _ensure_column(conn, "trade_jobs", "retry_after", "TEXT")
         _ensure_column(conn, "trade_jobs", "max_retries", "INTEGER DEFAULT 3")
-        _seed_demo_user(conn)
+        # owner scoping
+        _ensure_column(conn, "masters",       "owner_user_id", "TEXT")
+        _ensure_column(conn, "slaves",        "owner_user_id", "TEXT")
+        _ensure_column(conn, "trade_intents", "owner_user_id", "TEXT")
+        _ensure_column(conn, "trade_jobs",    "owner_user_id", "TEXT")
+        # encrypted broker credentials (DPAPI envelope)
+        _ensure_column(conn, "masters", "password_enc",          "TEXT NOT NULL DEFAULT ''")
+        _ensure_column(conn, "masters", "investor_password_enc",  "TEXT NOT NULL DEFAULT ''")
+        _ensure_column(conn, "slaves",  "password_enc",           "TEXT NOT NULL DEFAULT ''")
+        # investor_password field on masters (plain login path kept for compat)
+        _ensure_column(conn, "masters", "investor_password", "TEXT NOT NULL DEFAULT ''")
+        _seed_demo_user_if_none(conn)
     logger.info(f"Database ready: {DB_PATH.resolve()}")
 
 
@@ -273,28 +294,34 @@ def _ensure_column(conn, table: str, col: str, decl: str):
         logger.info(f"Migration: added {table}.{col}")
 
 
-def _password_hash(password: str) -> str:
-    return hashlib.sha256(password.encode("utf-8")).hexdigest()
+def _seed_demo_user_if_none(conn):
+    """Only seed a demo user if the table is completely empty (first ever run).
+    New deployments should use POST /setup/create-admin instead."""
+    pass  # first-run setup handled via /setup endpoint; no hardcoded credentials
 
 
-def _seed_demo_user(conn):
-    rows = conn.execute("SELECT COUNT(*) AS n FROM app_users").fetchone()
-    if rows and rows["n"]:
-        return
-    conn.execute(
-        """
-        INSERT INTO app_users (user_id, username, display_name, password_hash, role, enabled, created_at)
-        VALUES (?, ?, ?, ?, ?, 1, ?)
-        """,
-        (
-            "demo-user",
-            "demo@omniroute.local",
-            "OmniRoute Demo",
-            _password_hash("TradeCopier123!"),
-            "admin",
-            datetime.utcnow().isoformat(),
-        ),
-    )
+def needs_first_run_setup() -> bool:
+    """Return True if no admin users exist yet."""
+    with get_conn() as conn:
+        row = conn.execute("SELECT COUNT(*) AS n FROM app_users WHERE role='admin' AND enabled=1").fetchone()
+    return (row["n"] == 0) if row else True
+
+
+def create_first_admin(username: str, display_name: str, password: str) -> dict:
+    """Create the first admin user. Raises if one already exists."""
+    if not needs_first_run_setup():
+        raise ValueError("Admin user already exists")
+    user_id = secrets.token_hex(8)
+    with get_conn() as conn:
+        conn.execute(
+            """
+            INSERT INTO app_users (user_id, username, display_name, password_hash, role, enabled, created_at)
+            VALUES (?, ?, ?, ?, 'admin', 1, ?)
+            """,
+            (user_id, username.strip().lower(), display_name.strip(),
+             crypto.hash_password(password), datetime.utcnow().isoformat()),
+        )
+    return {"user_id": user_id, "username": username.strip().lower()}
 
 
 def verify_app_user(username: str, password: str) -> Optional[dict]:
@@ -305,8 +332,14 @@ def verify_app_user(username: str, password: str) -> Optional[dict]:
         ).fetchone()
     if not row:
         return None
-    if row["password_hash"] != _password_hash(password):
+    if not crypto.verify_password(password, row["password_hash"]):
         return None
+    # Transparent upgrade: re-hash legacy SHA-256 hashes with bcrypt on successful login
+    if not crypto.is_bcrypt_hash(row["password_hash"]):
+        new_hash = crypto.hash_password(password)
+        with get_conn() as conn:
+            conn.execute("UPDATE app_users SET password_hash=? WHERE user_id=?",
+                         (new_hash, row["user_id"]))
     return {
         "user_id": row["user_id"],
         "username": row["username"],
@@ -315,7 +348,7 @@ def verify_app_user(username: str, password: str) -> Optional[dict]:
     }
 
 
-def create_app_session(user_id: str, ttl_hours: int = 24 * 7) -> dict:
+def create_app_session(user_id: str, ttl_hours: int = 24) -> dict:
     token = secrets.token_urlsafe(32)
     now = datetime.utcnow()
     expires = now.timestamp() + ttl_hours * 3600
@@ -787,24 +820,34 @@ def record_broker_reconciliation(
 
 # ── Masters ──────────────────────────────────────────────────────────────────
 
-def save_master(m: MasterAccount):
+def save_master(m: MasterAccount, owner_user_id: Optional[str] = None):
+    pwd_enc = crypto.encrypt_password(m.password) if m.password and not crypto.is_encrypted(m.password) else (m.password or "")
+    inv_enc = ""
+    if hasattr(m, "investor_password") and m.investor_password:
+        inv_enc = crypto.encrypt_password(m.investor_password) if not crypto.is_encrypted(m.investor_password) else m.investor_password
     with get_conn() as conn:
         conn.execute("""
             INSERT INTO masters
-              (master_id,label,login,password,server,terminal_path,magic_number,
-               symbol_map_json,enabled,created_at)
-            VALUES (?,?,?,?,?,?,?,?,?,?)
+              (master_id,label,login,password,password_enc,investor_password,investor_password_enc,
+               server,terminal_path,magic_number,symbol_map_json,enabled,created_at,owner_user_id)
+            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)
             ON CONFLICT(master_id) DO UPDATE SET
               label=excluded.label, login=excluded.login,
-              password=excluded.password, server=excluded.server,
+              password=excluded.password,
+              password_enc=excluded.password_enc,
+              investor_password=excluded.investor_password,
+              investor_password_enc=excluded.investor_password_enc,
+              server=excluded.server,
               terminal_path=excluded.terminal_path,
               magic_number=excluded.magic_number,
               symbol_map_json=excluded.symbol_map_json,
-              enabled=excluded.enabled
+              enabled=excluded.enabled,
+              owner_user_id=COALESCE(excluded.owner_user_id, owner_user_id)
         """, (
-            m.master_id, m.label, m.login, m.password, m.server,
-            m.terminal_path, m.magic_number, json.dumps(m.symbol_map),
-            int(m.enabled), m.created_at.isoformat(),
+            m.master_id, m.label, m.login, m.password, pwd_enc,
+            getattr(m, "investor_password", ""), inv_enc,
+            m.server, m.terminal_path, m.magic_number, json.dumps(m.symbol_map),
+            int(m.enabled), m.created_at.isoformat(), owner_user_id,
         ))
 
 
@@ -859,17 +902,20 @@ def _row_to_master(row) -> MasterAccount:
 
 # ── Slaves ───────────────────────────────────────────────────────────────────
 
-def save_slave(s: SlaveAccount):
+def save_slave(s: SlaveAccount, owner_user_id: Optional[str] = None):
+    pwd_enc = crypto.encrypt_password(s.password) if s.password and not crypto.is_encrypted(s.password) else (s.password or "")
     with get_conn() as conn:
         conn.execute("""
             INSERT INTO slaves
-              (account_id,label,login,password,server,terminal_path,lot_sizing_mode,
+              (account_id,label,login,password,password_enc,server,terminal_path,lot_sizing_mode,
                fixed_lot,multiplier,max_lot,min_lot,symbol_map_json,max_open_trades,
-               slippage_override,protection_json,enabled,created_at)
-            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+               slippage_override,protection_json,enabled,created_at,owner_user_id)
+            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
             ON CONFLICT(account_id) DO UPDATE SET
               label=excluded.label, login=excluded.login,
-              password=excluded.password, server=excluded.server,
+              password=excluded.password,
+              password_enc=excluded.password_enc,
+              server=excluded.server,
               terminal_path=excluded.terminal_path,
               lot_sizing_mode=excluded.lot_sizing_mode,
               fixed_lot=excluded.fixed_lot, multiplier=excluded.multiplier,
@@ -878,12 +924,15 @@ def save_slave(s: SlaveAccount):
               max_open_trades=excluded.max_open_trades,
               slippage_override=excluded.slippage_override,
               protection_json=excluded.protection_json,
-              enabled=excluded.enabled
+              enabled=excluded.enabled,
+              owner_user_id=COALESCE(excluded.owner_user_id, owner_user_id)
         """, (
-            s.account_id, s.label, s.login, s.password, s.server, s.terminal_path,
+            s.account_id, s.label, s.login, s.password, pwd_enc,
+            s.server, s.terminal_path,
             s.lot_sizing_mode.value, s.fixed_lot, s.multiplier, s.max_lot, s.min_lot,
             json.dumps(s.symbol_map), s.max_open_trades, s.slippage_override,
             s.protection.model_dump_json(), int(s.enabled), s.created_at.isoformat(),
+            owner_user_id,
         ))
 
 
@@ -1038,6 +1087,94 @@ def log_modify(account_id: str, ticket: int, symbol: str,
             VALUES (?,?,?,?,?,?,?,?,?,?)
         """, (account_id, ticket, symbol, old_sl, old_tp, new_sl, new_tp,
               int(success), error, datetime.utcnow().isoformat()))
+
+
+# ── Decrypted credential helpers (internal use only — never expose to API) ───
+
+def get_master_password(master_id: str) -> str:
+    """Return decrypted trading password for a master. Never log or return over API."""
+    with get_conn() as conn:
+        row = conn.execute("SELECT password, password_enc FROM masters WHERE master_id=?", (master_id,)).fetchone()
+    if not row:
+        return ""
+    enc = row["password_enc"]
+    if enc:
+        try:
+            return crypto.decrypt_password(enc)
+        except Exception:
+            pass
+    return row["password"] or ""
+
+
+def get_master_investor_password(master_id: str) -> str:
+    """Return decrypted investor (read-only) password for a master."""
+    with get_conn() as conn:
+        row = conn.execute(
+            "SELECT investor_password, investor_password_enc FROM masters WHERE master_id=?",
+            (master_id,),
+        ).fetchone()
+    if not row:
+        return ""
+    enc = row["investor_password_enc"]
+    if enc:
+        try:
+            return crypto.decrypt_password(enc)
+        except Exception:
+            pass
+    return row["investor_password"] or ""
+
+
+def get_slave_password(account_id: str) -> str:
+    """Return decrypted trading password for a slave."""
+    with get_conn() as conn:
+        row = conn.execute("SELECT password, password_enc FROM slaves WHERE account_id=?", (account_id,)).fetchone()
+    if not row:
+        return ""
+    enc = row["password_enc"]
+    if enc:
+        try:
+            return crypto.decrypt_password(enc)
+        except Exception:
+            pass
+    return row["password"] or ""
+
+
+def disable_account(account_id_or_master_id: str):
+    """Disable a master or slave without deleting it (keeps audit trail)."""
+    with get_conn() as conn:
+        conn.execute("UPDATE masters SET enabled=0 WHERE master_id=?", (account_id_or_master_id,))
+        conn.execute("UPDATE slaves  SET enabled=0 WHERE account_id=?", (account_id_or_master_id,))
+
+
+# ── Watcher baseline ─────────────────────────────────────────────────────────
+
+def save_watcher_baseline(master_id: str, tickets: dict):
+    """
+    Persist the set of positions/orders seen at watcher startup so they are
+    not emitted as new trade intents. tickets = {ticket_int: snapshot_dict}.
+    """
+    now = datetime.utcnow().isoformat()
+    with get_conn() as conn:
+        conn.execute("DELETE FROM watcher_baseline WHERE master_id=?", (master_id,))
+        for ticket, snap in tickets.items():
+            conn.execute(
+                "INSERT INTO watcher_baseline (master_id, ticket, snapshot_json, created_at) VALUES (?,?,?,?)",
+                (master_id, int(ticket), json.dumps(snap), now),
+            )
+
+
+def get_watcher_baseline(master_id: str) -> set:
+    """Return set of ticket integers that are part of this master's baseline."""
+    with get_conn() as conn:
+        rows = conn.execute(
+            "SELECT ticket FROM watcher_baseline WHERE master_id=?", (master_id,)
+        ).fetchall()
+    return {r["ticket"] for r in rows}
+
+
+def clear_watcher_baseline(master_id: str):
+    with get_conn() as conn:
+        conn.execute("DELETE FROM watcher_baseline WHERE master_id=?", (master_id,))
 
 
 # ── Virtual bots (rows in masters with is_virtual_bot=1) ────────────────────

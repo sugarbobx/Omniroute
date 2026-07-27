@@ -589,15 +589,7 @@ select.fi option{background:var(--bg2);}
         </p>
         <div class="auth-pill-row" style="margin-top:18px;">
           <span class="tag tag-blue">First login</span>
-          <span class="tag tag-green">Demo access</span>
           <span class="tag tag-gray">Public IP entry point</span>
-        </div>
-      </div>
-      <div class="auth-demo-box" style="font-size:11px;line-height:1.7;color:var(--text2);max-width:420px;">
-        <span class="label">Seeded access</span>
-        <div>Use the prefilled credentials below for the first login.</div>
-        <div style="margin-top:6px;color:var(--text3);">
-          demo@omniroute.local / TradeCopier123!
         </div>
       </div>
     </div>
@@ -612,14 +604,18 @@ select.fi option{background:var(--bg2);}
 
       <div class="auth-field">
         <label class="fl" for="auth-username">Username</label>
-        <input class="fi" id="auth-username" autocomplete="username" value="demo@omniroute.local" placeholder="demo@omniroute.local"/>
+        <input class="fi" id="auth-username" autocomplete="username" placeholder="username@example.com"/>
       </div>
       <div class="auth-field">
         <label class="fl" for="auth-password">Password</label>
         <div class="pw-wrap">
-          <input class="fi" id="auth-password" type="password" autocomplete="current-password" value="TradeCopier123!" placeholder="••••••••"/>
+          <input class="fi" id="auth-password" type="password" autocomplete="current-password" placeholder="••••••••"/>
           <button class="pw-toggle" type="button" onclick="togglePw('auth-password',this)" aria-label="Show/hide password">👁</button>
         </div>
+      </div>
+      <div style="display:flex;align-items:center;gap:8px;margin-top:8px;">
+        <input type="checkbox" id="auth-stay-signed-in" style="width:auto;margin:0;cursor:pointer;"/>
+        <label for="auth-stay-signed-in" style="font-size:12px;color:var(--text2);margin:0;cursor:pointer;">Stay signed in</label>
       </div>
       <button class="btn btn-primary auth-btn" id="auth-login-btn" onclick="submitLogin()">Sign in</button>
       <div id="auth-error" class="auth-error"></div>
@@ -665,35 +661,6 @@ select.fi option{background:var(--bg2);}
 <!-- ═══ SIDEBAR ════════════════════════════════════════════════════════ -->
 <aside class="sidebar">
 
-  <!-- BRIDGE CONFIG -->
-  <div class="sb-section">
-    <div class="sb-head" onclick="toggleSB('cfg')">
-      <span class="sb-title">Bridge Config</span>
-      <span id="cfg-arrow" style="color:var(--text3);font-size:11px">▾</span>
-    </div>
-    <div class="sb-body" id="cfg-body">
-      <div class="fg">
-        <label class="fl" for="cfg-url">
-          Bridge URL
-          <div class="tip"><div class="tip-icon">?</div><div class="tip-box">The address of your running Python bridge. Use http://127.0.0.1:8000 if running locally, or http://YOUR_VPS_IP:8000 for a remote server.</div></div>
-        </label>
-        <input class="fi" id="cfg-url" value="http://127.0.0.1:8000" placeholder="http://127.0.0.1:8000"/>
-      </div>
-      <div class="fg">
-        <label class="fl" for="cfg-apikey">
-          API Key
-          <div class="tip"><div class="tip-icon">?</div><div class="tip-box">Optional security key. Set API_SECRET in your .env file on the server. Paste the same value here to authenticate all dashboard requests.</div></div>
-        </label>
-        <div class="pw-wrap">
-          <input class="fi" id="cfg-apikey" type="password" placeholder="Leave blank if not configured"/>
-          <button class="pw-toggle" type="button" onclick="togglePw('cfg-apikey',this)" aria-label="Show/hide API key">👁</button>
-        </div>
-      </div>
-      <button class="btn btn-primary btn-full btn-sm" id="connect-btn" onclick="connectBridge()">⚡ Connect to Bridge</button>
-      <div id="bridge-error" style="display:none;margin-top:8px;padding:8px;background:rgba(255,59,92,.08);border:1px solid rgba(255,59,92,.2);border-radius:6px;font-family:var(--mono);font-size:10px;color:var(--red);line-height:1.5;"></div>
-    </div>
-  </div>
-
   <!-- ADD ACCOUNT -->
   <div class="sb-section">
     <div class="sb-head" onclick="toggleSB('add')">
@@ -716,14 +683,17 @@ select.fi option{background:var(--bg2);}
         </div>
       </div>
       <div class="fg"><label class="fl" for="f-server">Broker Server *</label><input class="fi" id="f-server" placeholder="BrokerName-Live01"/></div>
-      <div class="fg">
-        <label class="fl" for="f-path">Terminal Path <div class="tip"><div class="tip-icon">?</div><div class="tip-box">Full path to terminal64.exe on your Windows VPS. Default works for standard MT5 installs.</div></div></label>
-        <input class="fi" id="f-path" placeholder="C:\Program Files\MT5\terminal64.exe"/>
-      </div>
       <div id="master-fields">
         <div class="fg">
           <label class="fl" for="f-magic">Magic Number * <div class="tip"><div class="tip-icon">?</div><div class="tip-box">Set this same number in your Master EA's Magic Number input. When the EA fires a signal with this number, the bridge routes it to linked slaves.</div></div></label>
           <input class="fi" id="f-magic" type="number" placeholder="e.g. 111"/>
+        </div>
+        <div class="fg">
+          <label class="fl" for="f-inv-pass">Investor Password <div class="tip"><div class="tip-icon">?</div><div class="tip-box">Read-only investor password for the watcher session. The watcher uses this to monitor positions without trade access.</div></div></label>
+          <div class="pw-wrap">
+            <input class="fi" id="f-inv-pass" type="password" placeholder="Optional — read-only password"/>
+            <button class="pw-toggle" type="button" onclick="togglePw('f-inv-pass',this)" aria-label="Show/hide investor password">👁</button>
+          </div>
         </div>
       </div>
       <div id="slave-fields" style="display:none">
@@ -1390,7 +1360,10 @@ select.fi option{background:var(--bg2);}
         <button type="button" class="pw-toggle" onclick="togglePw('em-password',this)" aria-label="Show password">👁</button></div>
       </div>
       <div class="fg"><label class="fl" for="em-magic">Magic Number</label><input class="fi" id="em-magic" type="number" placeholder="100001"/></div>
-      <div class="fg"><label class="fl" for="em-path">Terminal Path</label><input class="fi" id="em-path" placeholder="C:\Program Files\MetaTrader 5\terminal64.exe"/></div>
+      <div class="fg"><label class="fl" for="em-inv-pass">Investor Password</label>
+        <div class="pw-wrap"><input class="fi" id="em-inv-pass" type="password" placeholder="leave blank to keep current"/>
+        <button type="button" class="pw-toggle" onclick="togglePw('em-inv-pass',this)" aria-label="Show password">👁</button></div>
+      </div>
     </div>
     <div class="modal-footer">
       <button class="btn btn-ghost btn-sm" onclick="closeModal('edit-master-modal')">Cancel</button>
@@ -1688,7 +1661,7 @@ let logTab='all', localLogs=[], symMap={}, currentRole='master';
 let mastersData=[], slavesData=[];
 const equityHistory = {};
 let _linkMasterId=null, _confirmCb=null;
-const sbState={guide:true,cfg:true,add:true,sym:false};
+const sbState={guide:true,add:true,sym:false};
 let authUser=null;
 let _appBootstrapped=false;
 let _pollTimer=null;
@@ -1745,6 +1718,7 @@ function hideAuthShell(){
 async function submitLogin(){
   const username=document.getElementById('auth-username').value.trim();
   const password=document.getElementById('auth-password').value;
+  const staySignedIn=document.getElementById('auth-stay-signed-in')?.checked||false;
   if(!username||!password){
     showAuthError('Enter both username and password.');
     return;
@@ -1755,14 +1729,23 @@ async function submitLogin(){
     const r=await fetch('/auth/login',{
       method:'POST',
       headers:{'Content-Type':'application/json'},
-      body:JSON.stringify({username,password}),
+      body:JSON.stringify({username,password,stay_signed_in:staySignedIn}),
     });
     const text=await r.text();
     if(!r.ok) throw new Error(text||`HTTP ${r.status}`);
     const data=JSON.parse(text);
     try{
-      localStorage.setItem(AUTH_TOKEN_KEY,data.session_token);
-      localStorage.setItem(AUTH_USER_KEY,JSON.stringify(data.user||{}));
+      if(staySignedIn){
+        localStorage.setItem(AUTH_TOKEN_KEY,data.session_token);
+        localStorage.setItem(AUTH_USER_KEY,JSON.stringify(data.user||{}));
+        sessionStorage.removeItem(AUTH_TOKEN_KEY);
+        sessionStorage.removeItem(AUTH_USER_KEY);
+      } else {
+        sessionStorage.setItem(AUTH_TOKEN_KEY,data.session_token);
+        sessionStorage.setItem(AUTH_USER_KEY,JSON.stringify(data.user||{}));
+        localStorage.removeItem(AUTH_TOKEN_KEY);
+        localStorage.removeItem(AUTH_USER_KEY);
+      }
     }catch(e){}
     authUser=data.user||null;
     hideAuthShell();
@@ -1773,19 +1756,21 @@ async function submitLogin(){
 }
 
 async function restoreSession(){
-  const token=localStorage.getItem(AUTH_TOKEN_KEY);
+  const token=localStorage.getItem(AUTH_TOKEN_KEY)||sessionStorage.getItem(AUTH_TOKEN_KEY);
   if(!token) return false;
   try{
     const r=await fetch('/auth/me',{headers:{'X-Session-Token':token}});
     if(!r.ok) throw new Error('session invalid');
     const data=await r.json();
-    authUser=data.user||JSON.parse(localStorage.getItem(AUTH_USER_KEY)||'null');
+    authUser=data.user||JSON.parse(localStorage.getItem(AUTH_USER_KEY)||sessionStorage.getItem(AUTH_USER_KEY)||'null');
     hideAuthShell();
     return true;
   }catch(_){
     try{
       localStorage.removeItem(AUTH_TOKEN_KEY);
       localStorage.removeItem(AUTH_USER_KEY);
+      sessionStorage.removeItem(AUTH_TOKEN_KEY);
+      sessionStorage.removeItem(AUTH_USER_KEY);
     }catch(e){}
     authUser=null;
     showAuthShell();
@@ -1794,13 +1779,7 @@ async function restoreSession(){
 }
 
 function bootstrapApp(){
-  const savedKey = localStorage.getItem('omni_api_key');
-  const cfgUrlEl = document.getElementById('cfg-url');
-  const cfgKeyEl = document.getElementById('cfg-apikey');
-  const bridgeUrl = APP_ORIGIN.replace(/\/$/,'');
-  BRIDGE = bridgeUrl;
-  if (cfgUrlEl) cfgUrlEl.value = bridgeUrl;
-  if (savedKey && cfgKeyEl) cfgKeyEl.value = savedKey;
+  BRIDGE = APP_ORIGIN.replace(/\/$/,'');
   if (_appBootstrapped) {
     connectBridge();
     return;
@@ -1815,21 +1794,13 @@ function bootstrapApp(){
     if(!wsActive) refreshAll();
     else apiFetch('/logs?limit=400').then(logs=>{localLogs=logs;renderLog();}).catch(()=>{});
   },3000);
-  if (window._omniBound) return;
-  window._omniBound = true;
-  const cfgUrl = document.getElementById('cfg-url');
-  if (cfgUrl) cfgUrl.addEventListener('change',e=>{ BRIDGE=e.target.value.replace(/\/$/,''); });
 }
 
 // ══════════════════════════════════════════════════════════════════════
 // WEBSOCKET + BRIDGE CONNECTION
 // ══════════════════════════════════════════════════════════════════════
 function connectBridge(){
-  BRIDGE = document.getElementById('cfg-url').value.replace(/\/$/,'');
-  try{ localStorage.setItem('omni_bridge_url', BRIDGE); }catch(e){}
-  const key=document.getElementById('cfg-apikey')?.value;
-  if(key) try{ localStorage.setItem('omni_api_key', key); }catch(e){}
-  hideBridgeError();
+  BRIDGE = APP_ORIGIN.replace(/\/$/,'');
   if(_cdTimer){clearInterval(_cdTimer);_cdTimer=null;}
   if(ws){ws.close();ws=null;}
 
@@ -1839,7 +1810,7 @@ function connectBridge(){
     ws.onopen=()=>{
       wsActive=true;
       if(_cdTimer){clearInterval(_cdTimer);_cdTimer=null;}
-      setPill('blue','Live · '+BRIDGE.replace('http://',''));
+      setPill('blue','Live');
       refreshAll();
     };
     ws.onmessage=e=>{
@@ -1857,12 +1828,10 @@ function connectBridge(){
     };
     ws.onerror=()=>{
       wsActive=false;
-      setPill('red','Error — Check bridge URL');
-      showBridgeError(`Cannot reach ${BRIDGE}\n\nMake sure:\n1. Python bridge is running: python bridge/main.py\n2. Port 8000 is open\n3. URL is correct (VPS IP or localhost)`);
+      setPill('red','WS Error');
     };
   }catch(err){
     setPill('red','Failed');
-    showBridgeError(err.message);
   }
 }
 
@@ -1873,13 +1842,8 @@ function setPill(color,label){
   lbl.style.color=color==='blue'?'var(--blue-bright)':color==='red'?'var(--red)':'var(--text3)';
 }
 
-function showBridgeError(msg){
-  const el=document.getElementById('bridge-error');
-  el.style.display='block';
-  el.style.whiteSpace='pre-wrap';
-  el.textContent=msg;
-}
-function hideBridgeError(){ document.getElementById('bridge-error').style.display='none'; }
+function showBridgeError(msg){ toast(msg.split('\n')[0]||'Bridge error','error'); }
+function hideBridgeError(){}
 
 // ══════════════════════════════════════════════════════════════════════
 // STATUS
@@ -1907,10 +1871,8 @@ async function refreshAll(){
     const s=await apiFetch('/status'); applyStatus(s);
     const logs=await apiFetch('/logs?limit=400'); localLogs=logs; renderLog();
     const sm=await apiFetch('/symbol-map'); symMap=sm.global||{}; renderSymMap();
-    hideBridgeError();
   }catch(e){
     setPill('red','Unreachable');
-    showBridgeError(`Cannot reach ${BRIDGE}\n\nThe Python bridge server is not running or the URL is wrong.\n\nStart it with: python bridge/main.py`);
   }
 }
 
@@ -2132,14 +2094,15 @@ async function addAccount(){
   const login=parseInt(document.getElementById('f-login').value);
   const pass=document.getElementById('f-pass').value;
   const server=document.getElementById('f-server').value.trim();
-  const path=document.getElementById('f-path').value.trim()||'C:\\Program Files\\MetaTrader 5\\terminal64.exe';
   if(!label||!login||!pass||!server) return toast('Fill all required fields (*)','error');
   if(!wsActive&&!BRIDGE) return toast('Connect to bridge first','error');
-  const payload={role:currentRole,label,login,password:pass,server,terminal_path:path};
+  const payload={role:currentRole,label,login,password:pass,server};
   if(currentRole==='master'){
     const magic=parseInt(document.getElementById('f-magic').value);
     if(!magic) return toast('Magic number is required for master','error');
     payload.magic_number=magic;
+    const invPass=document.getElementById('f-inv-pass')?.value;
+    if(invPass) payload.investor_password=invPass;
   } else {
     payload.lot_sizing_mode=document.getElementById('f-lot-mode').value;
     payload.max_lot=parseFloat(document.getElementById('f-maxlot').value)||10.0;
@@ -2148,7 +2111,7 @@ async function addAccount(){
   const btn = document.getElementById('add-account-btn');
   await withBtn(btn, 'Adding…', async () => {
     const result = await apiFetch('/account','POST',payload);
-    ['f-label','f-login','f-pass','f-server','f-path','f-magic','f-maxlot','f-mult'].forEach(id=>{ const e=document.getElementById(id); if(e) e.value=''; });
+    ['f-label','f-login','f-pass','f-server','f-magic','f-inv-pass','f-maxlot','f-mult'].forEach(id=>{ const e=document.getElementById(id); if(e) e.value=''; });
     await refreshAll();
     if(currentRole==='slave' && result.account_id){
       toast(`Slave "${label}" added — provisioning MT5 terminal…`,'info');
@@ -2279,9 +2242,7 @@ function toast(msg,type='success'){
 // ══════════════════════════════════════════════════════════════════════
 async function apiFetch(path,method='GET',body=null){
   const opts={method,headers:{'Content-Type':'application/json'}};
-  const key=document.getElementById('cfg-apikey')?.value;
-  if(key) opts.headers['X-API-Key']=key;
-  const token=localStorage.getItem(AUTH_TOKEN_KEY);
+  const token=localStorage.getItem(AUTH_TOKEN_KEY)||sessionStorage.getItem(AUTH_TOKEN_KEY);
   if(token) opts.headers['X-Session-Token']=token;
   if(body) opts.body=JSON.stringify(body);
   const r=await fetch(BRIDGE+path,opts);
@@ -3013,13 +2974,7 @@ document.addEventListener('keydown',e=>{
 // BOOT
 // ══════════════════════════════════════════════════════════════════════
 
-// Restore persisted Bridge URL + API key
-try {
-  const savedUrl = localStorage.getItem('omni_bridge_url');
-  const savedKey = localStorage.getItem('omni_api_key');
-  if (savedUrl) document.getElementById('cfg-url').value = savedUrl;
-  if (savedKey) document.getElementById('cfg-apikey').value = savedKey;
-} catch(e) {}
+// Bridge URL is always same-origin — no persisted config needed
 
 // ══════════════════════════════════════════════════════════════════════
 // BOT ENGINE TAB
@@ -3406,7 +3361,7 @@ async function openEditMaster(id){
     document.getElementById('em-server').value=data.server||'';
     document.getElementById('em-password').value='';
     document.getElementById('em-magic').value=data.magic_number||'';
-    document.getElementById('em-path').value=data.terminal_path||'';
+    document.getElementById('em-inv-pass').value='';
     openModal('edit-master-modal');
   }catch(e){toast('Failed to load master details','error');}
 }
@@ -3419,13 +3374,13 @@ async function saveEditMaster(){
   const server=document.getElementById('em-server').value.trim();
   const password=document.getElementById('em-password').value;
   const magic=document.getElementById('em-magic').value;
-  const path=document.getElementById('em-path').value.trim();
+  const invPass=document.getElementById('em-inv-pass').value;
   if(label) payload.label=label;
   if(login) payload.login=parseInt(login);
   if(server) payload.server=server;
   if(password) payload.password=password;
   if(magic) payload.magic_number=parseInt(magic);
-  if(path) payload.terminal_path=path;
+  if(invPass) payload.investor_password=invPass;
   try{
     await apiFetch(`/masters/${id}`,'PUT',payload);
     closeModal('edit-master-modal');

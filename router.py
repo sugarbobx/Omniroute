@@ -26,7 +26,9 @@ MT5_SLAVES_DIR = Path(r"C:\MT5-Slaves")
 import database as db
 import notifier
 import protection as prot_engine
+import provisioning
 import worker as worker_svc
+from master_watcher import MasterWatcher
 from models import (
     ConnectionStatus,
     LotSizingMode,
@@ -101,6 +103,7 @@ class CopyRouter:
         self._current_mt5_path:     Optional[str]               = None
         self._worker_tasks:         Dict[str, asyncio.Task]     = {}
         self._worker_stop_event:    Optional[asyncio.Event]     = None
+        self._watchers:             Dict[str, MasterWatcher]    = {}
 
     # ── Boot / shutdown ──────────────────────────────────────────────────────
 
@@ -139,9 +142,18 @@ class CopyRouter:
             self._start_worker_task(ss.account.account_id)
 
         asyncio.create_task(self._heartbeat_monitor(), name="heartbeat_monitor")
+
+        # Start a watcher for each enabled, non-virtual master
+        for ms in self.masters.values():
+            if ms.account.enabled and ms.account.terminal_path != "virtual":
+                self._start_watcher(ms.account.master_id)
+
         notifier.notify_bridge_started(len(self.masters), len(self.slaves))
 
     async def shutdown(self):
+        for watcher in list(self._watchers.values()):
+            watcher.stop()
+        self._watchers.clear()
         if self._worker_stop_event:
             self._worker_stop_event.set()
         for task in list(self._worker_tasks.values()):
@@ -154,20 +166,23 @@ class CopyRouter:
 
     # ── CRUD ─────────────────────────────────────────────────────────────────
 
-    async def add_master(self, account: MasterAccount) -> dict:
+    async def add_master(self, account: MasterAccount, owner_user_id: Optional[str] = None) -> dict:
         if account.magic_number in self._magic_index:
             return {"status": "duplicate_magic", "existing_master_id": self._magic_index[account.magic_number]}
         state = MasterState(account)
         self.masters[account.master_id] = state
         self._magic_index[account.magic_number] = account.master_id
-        db.save_master(account)
+        db.save_master(account, owner_user_id=owner_user_id)
         await self._connect_master(state)
+        if account.enabled and account.terminal_path != "virtual":
+            self._start_watcher(account.master_id)
         self._log_event("INFO", f"Master added: {account.label} magic={account.magic_number}", master_id=account.master_id)
         return {"status": "added", "master_id": account.master_id, "connected": state.status == ConnectionStatus.CONNECTED}
 
     def remove_master(self, master_id: str) -> dict:
         if master_id not in self.masters:
             return {"status": "not_found"}
+        self._stop_watcher(master_id)
         state = self.masters.pop(master_id)
         self._magic_index.pop(state.account.magic_number, None)
         db.delete_master(master_id)
@@ -177,14 +192,12 @@ class CopyRouter:
             self._primary_master = None
         return {"status": "removed", "master_id": master_id}
 
-    async def add_slave(self, account: SlaveAccount) -> dict:
+    async def add_slave(self, account: SlaveAccount, owner_user_id: Optional[str] = None) -> dict:
         if account.account_id in self.slaves:
             return {"status": "already_registered", "account_id": account.account_id}
         state = SlaveState(account)
         self.slaves[account.account_id] = state
-        db.save_slave(account)
-        # Provision asynchronously so the HTTP response returns immediately;
-        # the caller can poll /slaves/{id} or /slaves/{id}/provision_status for progress.
+        db.save_slave(account, owner_user_id=owner_user_id)
         asyncio.create_task(self.provision_slave(state))
         self._ensure_mt5_worker(account)
         self._start_worker_task(account.account_id)
@@ -341,6 +354,31 @@ class CopyRouter:
         task = self._worker_tasks.pop(worker_id, None)
         if task:
             task.cancel()
+
+    def _start_watcher(self, master_id: str):
+        if master_id in self._watchers:
+            return
+        state = self.masters.get(master_id)
+        if not state:
+            return
+        acc = state.account
+        investor_pw = db.get_master_investor_password(master_id) or db.get_master_password(master_id)
+        watcher = MasterWatcher(
+            master_id=master_id,
+            login=acc.login,
+            investor_password=investor_pw,
+            server=acc.server,
+            terminal_path=acc.terminal_path if acc.terminal_path != "C:\\Program Files\\MetaTrader 5\\terminal64.exe" else None,
+            router=self,
+        )
+        watcher.start()
+        self._watchers[master_id] = watcher
+        logger.info(f"Watcher started for master {master_id}")
+
+    def _stop_watcher(self, master_id: str):
+        watcher = self._watchers.pop(master_id, None)
+        if watcher:
+            watcher.stop()
 
     async def _worker_loop(self, worker_id: str, account_id: str):
         db.update_mt5_worker(worker_id, status="idle", last_heartbeat_at=True)
@@ -1127,9 +1165,8 @@ class CopyRouter:
             state.last_ping = datetime.utcnow()
             notifier.notify_master_connected(acc.label, acc.magic_number, acc.server, state.equity)
             return
-        # Real master: mark connected without switching the terminal to the master broker.
-        # The terminal stays logged into the slave account for Python trade execution.
-        # Master equity is updated from each trade signal's master_equity field.
+        # Real master is watched by MasterWatcher (started separately).
+        # Mark connected here; equity is updated from watcher poll data.
         state.status = ConnectionStatus.CONNECTED
         state.last_ping = datetime.utcnow()
         self._primary_master = acc
@@ -1196,13 +1233,11 @@ class CopyRouter:
                     return {"status": "connected", "equity": state.equity}
 
                 # Step 4 — switch account.
-                # If the terminal is currently on a different broker we need mt5.login().
-                # This blocks (no timeout param) and can take ~70–250 s for a server switch;
-                # run in a thread so the event loop stays responsive.
                 _set(4, "Logging in to broker (may take several minutes on first connect)…")
+                _pwd = db.get_slave_password(acc.account_id) or acc.password
                 await loop.run_in_executor(
                     None,
-                    lambda: mt5.login(acc.login, password=acc.password, server=acc.server),
+                    lambda: mt5.login(acc.login, password=_pwd, server=acc.server),
                 )
 
                 # After login (or IPC timeout), re-initialize and verify.
