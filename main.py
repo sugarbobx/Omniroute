@@ -424,7 +424,9 @@ async def disable_master(master_id: str):
     if master_id not in router.masters:
         raise HTTPException(404)
     router._stop_watcher(master_id)
-    router.masters[master_id].account.enabled = False
+    state = router.masters[master_id]
+    state.account.enabled = False
+    state.status = ConnectionStatus.DISCONNECTED
     db.disable_account(master_id)
     return {"status": "disabled", "master_id": master_id}
 
@@ -487,7 +489,9 @@ async def disable_slave(account_id: str):
     if account_id not in router.slaves:
         raise HTTPException(404)
     router._stop_worker_task(account_id)
-    router.slaves[account_id].account.enabled = False
+    state = router.slaves[account_id]
+    state.account.enabled = False
+    state.status = ConnectionStatus.DISCONNECTED
     db.disable_account(account_id)
     return {"status": "disabled", "account_id": account_id}
 

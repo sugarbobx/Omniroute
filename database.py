@@ -853,7 +853,7 @@ def save_master(m: MasterAccount, owner_user_id: Optional[str] = None):
 
 def load_all_masters() -> list[MasterAccount]:
     with get_conn() as conn:
-        rows = conn.execute("SELECT * FROM masters").fetchall()
+        rows = conn.execute("SELECT * FROM masters WHERE enabled=1").fetchall()
     return [_row_to_master(r) for r in rows]
 
 
@@ -947,7 +947,7 @@ def update_slave_protection(account_id: str, protection: TradeProtection):
 
 def load_all_slaves() -> list[SlaveAccount]:
     with get_conn() as conn:
-        rows  = conn.execute("SELECT * FROM slaves").fetchall()
+        rows  = conn.execute("SELECT * FROM slaves WHERE enabled=1").fetchall()
         links = conn.execute("SELECT account_id, master_id FROM slave_master_links").fetchall()
     slave_masters: dict[str, list[str]] = {}
     for lnk in links:
