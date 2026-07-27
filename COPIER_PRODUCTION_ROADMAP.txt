@@ -1,0 +1,46 @@
+OmniRoute copier-only production roadmap
+
+Goal
+- Make the trade copier durable, replayable, auditable, and safe enough for production use.
+
+Phase 1: Durable signal intake
+- Persist every incoming master signal before any broker action.
+- Add an idempotency key so retries do not duplicate executions.
+- Create a stable execution record for open, close, and modify events.
+
+Phase 2: Job fan-out
+- Expand each accepted signal into one job per eligible slave.
+- Store the job target, computed symbol, computed lot, and protection settings.
+- Track per-job status independently so one slave failure does not affect the rest.
+
+Phase 3: Broker execution
+- Split preparation from execution in the router.
+- Execute with explicit timeout, retry, and failure classification.
+- Record broker ticket, fill price, and error code for every attempt.
+
+Phase 4: Reconciliation
+- Confirm each job against broker state after execution.
+- Rebuild internal state after restarts by scanning pending or incomplete jobs.
+- Reconcile orphaned positions, missed modifies, and missed closes.
+
+Phase 5: Risk and safety
+- Add exposure caps per master and per slave.
+- Enforce duplicate-link and stale-session checks.
+- Formalize hard reject rules for symbol mismatch, max size, and disabled accounts.
+
+Phase 6: Observability
+- Keep a full audit trail of accepted, blocked, retried, failed, and confirmed actions.
+- Add per-master and per-slave execution metrics.
+- Make the status endpoint reflect actual execution state, not just in-memory routing state.
+
+Phase 7: Operational hardening
+- Make startup recovery deterministic.
+- Separate execution logic from HTTP request handling.
+- Add test coverage for duplicate signals, blocked trades, retries, and restart recovery.
+
+Implementation order
+1. Add database tables for intents, jobs, attempts, and reconciliations.
+2. Change trade endpoints to persist intent first.
+3. Add job creation and per-slave execution records.
+4. Add retry and recovery logic.
+5. Add reconciliation jobs and audit queries.

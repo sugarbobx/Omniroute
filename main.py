@@ -71,6 +71,11 @@ class LoginRequest(BaseModel):
     password: str
 
 
+def _trade_intent_key(kind: str, *parts: object) -> str:
+    seed = "|".join([kind, *[str(p) for p in parts]])
+    return str(uuid.uuid5(uuid.NAMESPACE_URL, seed))
+
+
 def _session_from_request(request: Request) -> Optional[dict]:
     token = request.headers.get("X-Session-Token") or request.headers.get("Authorization", "").removeprefix("Bearer ").strip()
     if not token:
@@ -188,9 +193,24 @@ async def auth_logout(request: Request):
 @app.post("/trade-signal", tags=["Trading"])
 async def trade_signal(signal: TradeSignal, background_tasks: BackgroundTasks):
     t0 = time.perf_counter()
+    intent_id = signal.signal_id
+    idempotency_key = signal.signal_id
+    master_id = router._magic_index.get(signal.magic_number)
+    db.save_trade_intent(
+        intent_id=intent_id,
+        idempotency_key=idempotency_key,
+        intent_type="open",
+        payload=signal.model_dump(mode="json"),
+        master_id=master_id,
+        magic_number=signal.magic_number,
+        symbol=signal.symbol,
+        direction=signal.type.value,
+        status="queued" if master_id else "rejected",
+    )
     if signal.magic_number not in router._magic_index:
+        db.update_trade_intent_status(intent_id, "rejected", f"No master for magic_number={signal.magic_number}")
         raise HTTPException(404, f"No master for magic_number={signal.magic_number}")
-    background_tasks.add_task(router.route_signal, signal, t0)
+    background_tasks.add_task(router.dispatch_open_intent, signal)
     return {
         "status": "accepted", "signal_id": signal.signal_id,
         "magic_number": signal.magic_number,
@@ -201,7 +221,23 @@ async def trade_signal(signal: TradeSignal, background_tasks: BackgroundTasks):
 
 @app.post("/trade-close", tags=["Trading"])
 async def trade_close(magic_number: int, symbol: str, background_tasks: BackgroundTasks):
-    background_tasks.add_task(router.route_close, magic_number, symbol)
+    intent_id = _trade_intent_key("close", magic_number, symbol)
+    idempotency_key = intent_id
+    master_id = router._magic_index.get(magic_number)
+    db.save_trade_intent(
+        intent_id=intent_id,
+        idempotency_key=idempotency_key,
+        intent_type="close",
+        payload={"magic_number": magic_number, "symbol": symbol},
+        master_id=master_id,
+        magic_number=magic_number,
+        symbol=symbol,
+        direction="close",
+        status="queued" if master_id else "rejected",
+    )
+    if not master_id:
+        db.update_trade_intent_status(intent_id, "rejected", f"No master for magic_number={magic_number}")
+    background_tasks.add_task(router.dispatch_close_intent, intent_id, magic_number, symbol)
     return {"status": "close_dispatched", "magic_number": magic_number, "symbol": symbol}
 
 
@@ -216,9 +252,24 @@ async def trade_modify(modify: ModifySignal, background_tasks: BackgroundTasks):
       OnTradeTransaction → TRADE_TRANSACTION_POSITION
       payload: {magic_number, symbol, new_sl, new_tp, master_price}
     """
+    intent_id = _trade_intent_key("modify", modify.magic_number, modify.symbol, modify.new_sl, modify.new_tp, modify.master_price)
+    idempotency_key = intent_id
+    master_id = router._magic_index.get(modify.magic_number)
+    db.save_trade_intent(
+        intent_id=intent_id,
+        idempotency_key=idempotency_key,
+        intent_type="modify",
+        payload=modify.model_dump(mode="json"),
+        master_id=master_id,
+        magic_number=modify.magic_number,
+        symbol=modify.symbol,
+        direction="modify",
+        status="queued" if master_id else "rejected",
+    )
     if modify.magic_number not in router._magic_index:
+        db.update_trade_intent_status(intent_id, "rejected", f"No master for magic_number={modify.magic_number}")
         raise HTTPException(404, f"No master for magic_number={modify.magic_number}")
-    background_tasks.add_task(router.route_modify, modify)
+    background_tasks.add_task(router.dispatch_modify_intent, intent_id, modify)
     return {
         "status": "modify_dispatched",
         "magic_number": modify.magic_number,
@@ -754,6 +805,64 @@ async def delete_strategy(strategy_id: str):
 
 
 app.include_router(strategy_api)
+
+
+# ── Copier observability (phases 5, 6, 7, 10) ────────────────────────────────
+
+copier_api = APIRouter(prefix="/api/v1/copier", tags=["Copier"])
+
+
+@copier_api.get("/workers")
+async def list_workers():
+    """Phase 5: All MT5 worker rows with lifecycle state and heartbeat."""
+    return db.load_mt5_workers()
+
+
+@copier_api.get("/jobs")
+async def list_jobs(limit: int = 100, account_id: Optional[str] = None):
+    """Phase 10: Recent trade jobs with status and attempt counts."""
+    return db.get_recent_jobs(limit=limit, account_id=account_id)
+
+
+@copier_api.get("/jobs/{job_id}")
+async def get_job_detail(job_id: str):
+    """Phase 10: Job detail including all attempts."""
+    job = db.get_trade_job(job_id)
+    if not job:
+        raise HTTPException(404, f"Job {job_id} not found")
+    return {"job": job, "attempts": db.get_job_attempts(job_id)}
+
+
+@copier_api.get("/intents")
+async def list_intents(limit: int = 100):
+    """Phase 10: Recent trade intents."""
+    return db.get_recent_intents(limit=limit)
+
+
+@copier_api.get("/reconciliations")
+async def list_reconciliations(limit: int = 100):
+    """Phase 6: Recent broker reconciliation records."""
+    return db.get_recent_reconciliations(limit=limit)
+
+
+@copier_api.get("/metrics")
+async def get_metrics():
+    """Phase 10: Aggregated telemetry — jobs, workers, reconciliations."""
+    metrics = db.get_job_metrics()
+    full_status = router.get_full_status()
+    return {
+        **metrics,
+        "masters_connected": full_status["masters_connected"],
+        "slaves_connected": full_status["slaves_connected"],
+        "trades_copied_today": full_status["trades_copied_today"],
+        "trades_failed_today": full_status["trades_failed_today"],
+        "trades_blocked_today": full_status["trades_blocked_today"],
+        "avg_latency_ms": full_status["avg_latency_ms"],
+        "uptime_seconds": full_status["uptime_seconds"],
+    }
+
+
+app.include_router(copier_api)
 
 
 # ── WebSocket ─────────────────────────────────────────────────────────────────

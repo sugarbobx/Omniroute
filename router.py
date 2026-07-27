@@ -9,12 +9,14 @@ Multi-terminal MT5 architecture:
 """
 
 import asyncio
+import json
 import logging
+import uuid
 import shutil
 import subprocess
 import time
 from collections import deque
-from datetime import datetime, date
+from datetime import datetime, date, timedelta
 from pathlib import Path
 from typing import Dict, Optional
 
@@ -24,6 +26,7 @@ MT5_SLAVES_DIR = Path(r"C:\MT5-Slaves")
 import database as db
 import notifier
 import protection as prot_engine
+import worker as worker_svc
 from models import (
     ConnectionStatus,
     LotSizingMode,
@@ -96,11 +99,14 @@ class CopyRouter:
         self._slave_terminal_paths: Dict[str, str]              = {}
         self._provision_status:     Dict[str, dict]             = {}
         self._current_mt5_path:     Optional[str]               = None
+        self._worker_tasks:         Dict[str, asyncio.Task]     = {}
+        self._worker_stop_event:    Optional[asyncio.Event]     = None
 
     # ── Boot / shutdown ──────────────────────────────────────────────────────
 
     async def startup(self):
         self._mt5_lock = asyncio.Lock()
+        self._worker_stop_event = asyncio.Event()
         masters = db.load_all_masters()
         slaves  = db.load_all_slaves()
         for m in masters:
@@ -129,10 +135,18 @@ class CopyRouter:
         # UI polls /slaves/{id}/provision_status for live progress.
         for ss in self.slaves.values():
             asyncio.create_task(self.provision_slave(ss))
+            self._ensure_mt5_worker(ss.account)
+            self._start_worker_task(ss.account.account_id)
 
+        asyncio.create_task(self._heartbeat_monitor(), name="heartbeat_monitor")
         notifier.notify_bridge_started(len(self.masters), len(self.slaves))
 
     async def shutdown(self):
+        if self._worker_stop_event:
+            self._worker_stop_event.set()
+        for task in list(self._worker_tasks.values()):
+            task.cancel()
+        self._worker_tasks.clear()
         notifier.notify_bridge_stopped()
         await notifier.close_client()
         if MT5_AVAILABLE:
@@ -172,6 +186,8 @@ class CopyRouter:
         # Provision asynchronously so the HTTP response returns immediately;
         # the caller can poll /slaves/{id} or /slaves/{id}/provision_status for progress.
         asyncio.create_task(self.provision_slave(state))
+        self._ensure_mt5_worker(account)
+        self._start_worker_task(account.account_id)
         self._log_event("INFO", f"Slave added: {account.label}", account_id=account.account_id)
         return {"status": "provisioning", "account_id": account.account_id}
 
@@ -179,6 +195,8 @@ class CopyRouter:
         if account_id not in self.slaves:
             return {"status": "not_found"}
         self.slaves.pop(account_id)
+        self._stop_worker_task(account_id)
+        db.delete_mt5_worker(self._worker_id_for_account(account_id))
         db.delete_slave(account_id)
         self.deprovision_slave(account_id)
         return {"status": "removed", "account_id": account_id}
@@ -232,6 +250,13 @@ class CopyRouter:
     def link(self, master_id: str, account_id: str) -> dict:
         if master_id not in self.masters:  return {"status": "master_not_found"}
         if account_id not in self.slaves:  return {"status": "slave_not_found"}
+        current_slaves = self._eligible_slave_ids(master_id)
+        if account_id not in current_slaves and len(current_slaves) >= worker_svc.MAX_SLAVES_PER_MASTER:
+            return {
+                "status": "limit_exceeded",
+                "message": f"Maximum {worker_svc.MAX_SLAVES_PER_MASTER} slaves per master already linked",
+                "current_count": len(current_slaves),
+            }
         s = self.slaves[account_id]
         if master_id not in s.account.master_ids:
             s.account.master_ids.append(master_id)
@@ -245,70 +270,543 @@ class CopyRouter:
         db.unlink_slave_from_master(account_id, master_id)
         return {"status": "unlinked"}
 
-    # ── Signal routing ────────────────────────────────────────────────────────
+    def _build_trade_job_payload(
+        self,
+        job_type: str,
+        master_state: MasterState,
+        slave_state: SlaveState,
+        source_payload: dict,
+        slave_symbol: str,
+    ) -> dict:
+        return {
+            "job_type": job_type,
+            "master_id": master_state.account.master_id,
+            "master_label": master_state.account.label,
+            "slave_account_id": slave_state.account.account_id,
+            "slave_label": slave_state.account.label,
+            "slave_symbol": slave_symbol,
+            "source": source_payload,
+        }
 
-    async def route_signal(self, signal: TradeSignal, t0: float):
+    def _create_trade_job(
+        self,
+        intent_id: str,
+        job_type: str,
+        master_state: MasterState,
+        slave_state: SlaveState,
+        source_symbol: str,
+        slave_symbol: str,
+        source_payload: dict,
+    ) -> str:
+        job_id = str(uuid.uuid4())[:12]
+        request = self._build_trade_job_payload(job_type, master_state, slave_state, source_payload, slave_symbol)
+        db.save_trade_job(
+            job_id=job_id,
+            intent_id=intent_id,
+            account_id=slave_state.account.account_id,
+            request=request,
+            master_id=master_state.account.master_id,
+            job_type=job_type,
+            symbol=source_symbol,
+            slave_symbol=slave_symbol,
+        )
+        return job_id
+
+    def _eligible_slave_ids(self, master_id: str) -> list[str]:
+        return [
+            s_id for s_id, ss in self.slaves.items()
+            if master_id in ss.account.master_ids and ss.account.enabled
+        ]
+
+    def _worker_id_for_account(self, account_id: str) -> str:
+        return f"worker:{account_id}"
+
+    def _ensure_mt5_worker(self, account: SlaveAccount):
+        db.save_mt5_worker(
+            worker_id=self._worker_id_for_account(account.account_id),
+            account_id=account.account_id,
+            terminal_path=account.terminal_path,
+            worker_role="slave",
+            status="starting",
+        )
+
+    def _start_worker_task(self, account_id: str):
+        worker_id = self._worker_id_for_account(account_id)
+        if worker_id in self._worker_tasks and not self._worker_tasks[worker_id].done():
+            return
+        self._worker_tasks[worker_id] = asyncio.create_task(self._worker_loop(worker_id, account_id), name=worker_id)
+
+    def _stop_worker_task(self, account_id: str):
+        worker_id = self._worker_id_for_account(account_id)
+        task = self._worker_tasks.pop(worker_id, None)
+        if task:
+            task.cancel()
+
+    async def _worker_loop(self, worker_id: str, account_id: str):
+        db.update_mt5_worker(worker_id, status="idle", last_heartbeat_at=True)
+        while not (self._worker_stop_event and self._worker_stop_event.is_set()):
+            try:
+                job_row = db.claim_next_trade_job(worker_id, account_id)
+                if not job_row:
+                    db.update_mt5_worker(worker_id, status="idle", last_heartbeat_at=True)
+                    await asyncio.sleep(1.0)
+                    continue
+
+                if not db.mark_trade_job_started(job_row["job_id"], worker_id):
+                    continue
+
+                db.update_mt5_worker(
+                    worker_id,
+                    status="busy",
+                    current_job_id=job_row["job_id"],
+                    clear_current_error=True,
+                    last_heartbeat_at=True,
+                )
+                await self._process_claimed_trade_job(worker_id, job_row)
+
+                # Reload the job to get final status, then apply retry or reconcile.
+                finished_job = db.get_trade_job(job_row["job_id"])
+                if finished_job:
+                    await self._post_job_actions(finished_job)
+
+                db.update_mt5_worker(
+                    worker_id,
+                    status="idle",
+                    clear_current_job=True,
+                    clear_current_error=True,
+                    last_heartbeat_at=True,
+                )
+            except asyncio.CancelledError:
+                break
+            except Exception as exc:
+                db.update_mt5_worker(
+                    worker_id,
+                    status="degraded",
+                    current_error=str(exc),
+                    last_heartbeat_at=True,
+                )
+                await asyncio.sleep(2.0)
+
+        db.update_mt5_worker(worker_id, status="offline", current_job_id=None, last_heartbeat_at=True)
+
+    async def _post_job_actions(self, job_row: dict):
+        """Handle retry scheduling and reconciliation after a job finishes."""
+        status = job_row.get("status", "")
+        job_id = job_row["job_id"]
+
+        if status == "confirmed":
+            # Phase 6: reconcile confirmed jobs
+            try:
+                worker_svc.run_reconciliation(job_row)
+            except Exception as exc:
+                logger.error(f"Reconciliation error for job {job_id}: {exc}")
+            # Update parent intent to completed if all sibling jobs are done
+            self._update_intent_completion(job_row.get("intent_id"))
+            return
+
+        if status == "failed":
+            attempts = int(job_row.get("attempts", 0))
+            max_retries = int(job_row.get("max_retries") or 3)
+            error_code = job_row.get("error_code")
+            error_message = job_row.get("error_message")
+
+            failure_class = worker_svc.classify_failure(error_code, error_message)
+
+            if failure_class == "permanent" or attempts >= max_retries:
+                db.dead_letter_job(job_id, error_code=error_code, error_message=error_message)
+                self._log_event(
+                    "ERROR",
+                    f"Job {job_id} dead-lettered after {attempts} attempt(s): {error_message}",
+                    account_id=job_row.get("account_id"),
+                )
+                self._update_intent_completion(job_row.get("intent_id"))
+            else:
+                retry_after = worker_svc.compute_retry_after_iso(attempts)
+                db.schedule_job_retry(
+                    job_id, retry_after,
+                    error_code=error_code,
+                    error_message=error_message,
+                )
+                self._log_event(
+                    "WARN",
+                    f"Job {job_id} scheduled for retry #{attempts + 1} "
+                    f"(class={failure_class}) after {retry_after}",
+                    account_id=job_row.get("account_id"),
+                )
+
+    def _update_intent_completion(self, intent_id: Optional[str]):
+        if not intent_id:
+            return
+        with db.get_conn() as conn:
+            rows = conn.execute(
+                "SELECT status FROM trade_jobs WHERE intent_id=?", (intent_id,)
+            ).fetchall()
+        if not rows:
+            return
+        statuses = {r["status"] for r in rows}
+        terminal = {"confirmed", "failed", "dead_letter", "blocked", "no_targets"}
+        if not statuses.issubset(terminal):
+            return  # still in progress
+        if statuses <= {"confirmed"}:
+            db.update_trade_intent_status(intent_id, "completed")
+        else:
+            db.update_trade_intent_status(intent_id, "completed_with_errors")
+
+    async def _heartbeat_monitor(self):
+        """Phase 5: Mark workers offline if heartbeat is stale for > 60 seconds."""
+        while not (self._worker_stop_event and self._worker_stop_event.is_set()):
+            try:
+                await asyncio.sleep(30)
+                cutoff = (datetime.utcnow() - timedelta(seconds=60)).isoformat()
+                workers = db.load_mt5_workers()
+                for w in workers:
+                    if w["status"] in ("offline", "draining"):
+                        continue
+                    hb = w.get("last_heartbeat_at")
+                    if hb and hb < cutoff:
+                        db.update_mt5_worker(w["worker_id"], status="degraded",
+                                             current_error="Heartbeat stale > 60s")
+                        logger.warning(f"Worker {w['worker_id']} heartbeat stale — marked degraded")
+            except asyncio.CancelledError:
+                break
+            except Exception as exc:
+                logger.error(f"Heartbeat monitor error: {exc}")
+
+    async def _process_claimed_trade_job(self, worker_id: str, job_row: dict):
+        job_type = job_row["job_type"]
+        job_id = job_row["job_id"]
+        account_id = job_row["account_id"]
+        slave_state = self.slaves.get(account_id)
+        master_id = job_row.get("master_id")
+        master_state = self.masters.get(master_id) if master_id else None
+        if not slave_state or not master_state:
+            db.record_trade_job_attempt(
+                job_id=job_id,
+                attempt_no=int(job_row.get("attempts", 0)) + 1,
+                status="failed",
+                error_message="Missing master or slave state",
+            )
+            db.mark_trade_job_finished(job_id, "failed", error_message="Missing master or slave state")
+            return
+
+        request = json.loads(job_row["request_json"])
+        if job_type == "open":
+            source = request.get("source", request)
+            signal = TradeSignal.model_validate(source)
+            await self._execute_open_trade_job(job_id, signal, master_state, slave_state, time.perf_counter())
+            return
+
+        if job_type == "close":
+            source = request.get("source", request)
+            magic_number = int(source["magic_number"])
+            symbol = str(source["symbol"])
+            await self._close_trade_job(job_id, magic_number, symbol, master_state, slave_state)
+            return
+
+        if job_type == "modify":
+            source = request.get("source", request)
+            modify = ModifySignal.model_validate(source)
+            await self._modify_trade_job(job_id, modify, master_state, slave_state)
+            return
+
+        db.record_trade_job_attempt(
+            job_id=job_id,
+            attempt_no=int(job_row.get("attempts", 0)) + 1,
+            status="failed",
+            error_message=f"Unknown job type: {job_type}",
+        )
+        db.mark_trade_job_finished(job_id, "failed", error_message=f"Unknown job type: {job_type}")
+
+    async def dispatch_open_intent(self, signal: TradeSignal) -> dict:
         self._reset_daily_counters()
         master_id = self._magic_index.get(signal.magic_number)
         if not master_id:
-            self._log_event("WARN", f"No master for magic={signal.magic_number}")
-            return
+            db.update_trade_intent_status(signal.signal_id, "rejected", f"No master for magic={signal.magic_number}")
+            self._log_event("WARN", f"dispatch_open_intent: no master for magic={signal.magic_number}")
+            return {"status": "rejected", "reason": "master_not_found"}
+
         master_state = self.masters.get(master_id)
         if not master_state:
-            return
-        if signal.master_equity:
-            master_state.equity = signal.master_equity
+            db.update_trade_intent_status(signal.signal_id, "rejected", f"Master state missing for {master_id}")
+            return {"status": "rejected", "reason": "master_state_missing"}
 
-        linked_ids = [
-            s_id for s_id, ss in self.slaves.items()
-            if master_id in ss.account.master_ids
-            and ss.account.enabled
-            and ss.status == ConnectionStatus.CONNECTED
-        ]
-        if not linked_ids:
-            self._log_event("WARN", f"No connected slaves for master {master_state.account.label}", master_id=master_id)
-            return
+        target_ids = self._eligible_slave_ids(master_id)
+        if not target_ids:
+            db.update_trade_intent_status(signal.signal_id, "no_targets", "No enabled slave links")
+            self._log_event("WARN", f"dispatch_open_intent: no targets for {master_state.account.label}", master_id=master_id)
+            return {"status": "no_targets", "master_id": master_id, "job_ids": []}
 
-        notifier.notify_trade_detected(
-            master_label=master_state.account.label, magic_number=signal.magic_number,
-            symbol=signal.symbol, trade_type=signal.type.value, volume=signal.volume,
-            price=signal.price, sl=signal.sl, tp=signal.tp, signal_id=signal.signal_id,
+        job_ids = []
+        for s_id in target_ids:
+            slave_state = self.slaves[s_id]
+            slave_symbol = self._resolve_symbol(signal.symbol, master_state, slave_state)
+            job_id = self._create_trade_job(
+                intent_id=signal.signal_id,
+                job_type="open",
+                master_state=master_state,
+                slave_state=slave_state,
+                source_symbol=signal.symbol,
+                slave_symbol=slave_symbol,
+                source_payload=signal.model_dump(mode="json"),
+            )
+            job_ids.append(job_id)
+
+        db.update_trade_intent_status(signal.signal_id, "accepted")
+        self._log_event(
+            "INFO",
+            f"Dispatched open intent to {len(job_ids)} slave job(s)",
+            master_id=master_id,
+            signal_id=signal.signal_id,
+            symbol=signal.symbol,
         )
+        return {"status": "accepted", "master_id": master_id, "job_ids": job_ids, "target_count": len(job_ids)}
 
-        tasks = [self._execute_on_slave(signal, master_state, self.slaves[s_id], t0) for s_id in linked_ids]
-        await asyncio.gather(*tasks, return_exceptions=True)
-        master_state.trades_today += 1
-
-    async def route_close(self, magic_number: int, symbol: str):
+    async def dispatch_close_intent(self, intent_id: str, magic_number: int, symbol: str) -> dict:
+        self._reset_daily_counters()
         master_id = self._magic_index.get(magic_number)
         if not master_id:
-            return
+            db.update_trade_intent_status(intent_id, "rejected", f"No master for magic_number={magic_number}")
+            return {"status": "rejected", "reason": "master_not_found"}
+
         master_state = self.masters.get(master_id)
         if not master_state:
-            return
-        linked = [s_id for s_id, ss in self.slaves.items()
-                  if master_id in ss.account.master_ids and ss.status == ConnectionStatus.CONNECTED]
-        tasks = [self._close_on_slave(magic_number, symbol, master_state, self.slaves[s_id]) for s_id in linked]
-        if tasks:
-            await asyncio.gather(*tasks, return_exceptions=True)
+            db.update_trade_intent_status(intent_id, "rejected", f"Master state missing for {master_id}")
+            return {"status": "rejected", "reason": "master_state_missing"}
 
-    async def route_modify(self, modify: ModifySignal):
+        target_ids = self._eligible_slave_ids(master_id)
+        if not target_ids:
+            db.update_trade_intent_status(intent_id, "no_targets", "No enabled slave links")
+            return {"status": "no_targets", "master_id": master_id, "job_ids": []}
+
+        job_ids = []
+        for s_id in target_ids:
+            slave_state = self.slaves[s_id]
+            slave_symbol = self._resolve_symbol(symbol, master_state, slave_state)
+            job_id = self._create_trade_job(
+                intent_id=intent_id,
+                job_type="close",
+                master_state=master_state,
+                slave_state=slave_state,
+                source_symbol=symbol,
+                slave_symbol=slave_symbol,
+                source_payload={"magic_number": magic_number, "symbol": symbol},
+            )
+            job_ids.append(job_id)
+
+        db.update_trade_intent_status(intent_id, "accepted")
+        self._log_event(
+            "INFO",
+            f"Dispatched close intent to {len(job_ids)} slave job(s)",
+            master_id=master_id,
+            signal_id=intent_id,
+            symbol=symbol,
+        )
+        return {"status": "accepted", "master_id": master_id, "job_ids": job_ids, "target_count": len(job_ids)}
+
+    async def dispatch_modify_intent(self, intent_id: str, modify: ModifySignal) -> dict:
+        self._reset_daily_counters()
         master_id = self._magic_index.get(modify.magic_number)
         if not master_id:
-            self._log_event("WARN", f"route_modify: no master for magic={modify.magic_number}")
-            return
+            db.update_trade_intent_status(intent_id, "rejected", f"No master for magic_number={modify.magic_number}")
+            return {"status": "rejected", "reason": "master_not_found"}
+
         master_state = self.masters.get(master_id)
         if not master_state:
-            return
+            db.update_trade_intent_status(intent_id, "rejected", f"Master state missing for {master_id}")
+            return {"status": "rejected", "reason": "master_state_missing"}
 
-        linked = [s_id for s_id, ss in self.slaves.items()
-                  if master_id in ss.account.master_ids and ss.status == ConnectionStatus.CONNECTED]
+        target_ids = self._eligible_slave_ids(master_id)
+        if not target_ids:
+            db.update_trade_intent_status(intent_id, "no_targets", "No enabled slave links")
+            return {"status": "no_targets", "master_id": master_id, "job_ids": []}
 
-        tasks = [self._modify_sltp_on_slave(modify, master_state, self.slaves[s_id]) for s_id in linked]
-        if tasks:
-            await asyncio.gather(*tasks, return_exceptions=True)
+        job_ids = []
+        for s_id in target_ids:
+            slave_state = self.slaves[s_id]
+            slave_symbol = self._resolve_symbol(modify.symbol, master_state, slave_state)
+            job_id = self._create_trade_job(
+                intent_id=intent_id,
+                job_type="modify",
+                master_state=master_state,
+                slave_state=slave_state,
+                source_symbol=modify.symbol,
+                slave_symbol=slave_symbol,
+                source_payload=modify.model_dump(mode="json"),
+            )
+            job_ids.append(job_id)
+
+        db.update_trade_intent_status(intent_id, "accepted")
+        self._log_event(
+            "INFO",
+            f"Dispatched modify intent to {len(job_ids)} slave job(s)",
+            master_id=master_id,
+            signal_id=intent_id,
+            symbol=modify.symbol,
+        )
+        return {"status": "accepted", "master_id": master_id, "job_ids": job_ids, "target_count": len(job_ids)}
+
+    async def _record_trade_job_result(
+        self,
+        job_id: str,
+        job_type: str,
+        result: dict,
+        success: bool,
+        status: str,
+        latency_ms: float,
+        error_code: Optional[str] = None,
+        error_message: Optional[str] = None,
+    ):
+        job_row = db.get_trade_job(job_id) or {}
+        attempt_no = int(job_row.get("attempts", 0)) + 1
+        db.update_trade_job_status(
+            job_id,
+            status,
+            broker_ticket=result.get("order_ticket") if result else None,
+            fill_price=result.get("price") if result else None,
+            error_code=error_code,
+            error_message=error_message,
+        )
+        db.record_trade_job_attempt(
+            job_id=job_id,
+            attempt_no=attempt_no,
+            status=status,
+            request=result.get("request") if result else None,
+            response=result,
+            error_code=error_code,
+            error_message=error_message,
+            latency_ms=latency_ms,
+        )
+
+    # ── Signal routing (queue-only — execution handled by worker loop) ──────────
+
+    async def route_signal(self, signal: TradeSignal, t0: float) -> dict:
+        """Phase 3/9: Enqueue signal into the job queue; do NOT execute inline.
+        The worker loop will pick it up within the next polling cycle (~1s)."""
+        self._reset_daily_counters()
+        master_id = self._magic_index.get(signal.magic_number)
+        if master_id:
+            master_state = self.masters.get(master_id)
+            if master_state and signal.master_equity:
+                master_state.equity = signal.master_equity
+
+        db.save_trade_intent(
+            intent_id=signal.signal_id,
+            idempotency_key=signal.signal_id,
+            intent_type="open",
+            payload=signal.model_dump(mode="json"),
+            master_id=master_id,
+            magic_number=signal.magic_number,
+            symbol=signal.symbol,
+            direction=signal.type.value,
+            status="queued" if master_id else "rejected",
+        )
+        return await self.dispatch_open_intent(signal)
+
+    async def route_close(self, magic_number: int, symbol: str) -> dict:
+        """Phase 3/9: Enqueue close into the job queue; do NOT execute inline."""
+        self._reset_daily_counters()
+        intent_id = str(uuid.uuid5(uuid.NAMESPACE_URL, f"close|{magic_number}|{symbol}|{time.time()}"))
+        master_id = self._magic_index.get(magic_number)
+        db.save_trade_intent(
+            intent_id=intent_id,
+            idempotency_key=intent_id,
+            intent_type="close",
+            payload={"magic_number": magic_number, "symbol": symbol},
+            master_id=master_id,
+            magic_number=magic_number,
+            symbol=symbol,
+            direction="close",
+            status="queued" if master_id else "rejected",
+        )
+        return await self.dispatch_close_intent(intent_id, magic_number, symbol)
+
+    async def route_modify(self, intent_id: str, modify: ModifySignal) -> dict:
+        """Enqueue a modify into the job queue."""
+        self._reset_daily_counters()
+        return await self.dispatch_modify_intent(intent_id, modify)
 
     # ── Execution ─────────────────────────────────────────────────────────────
+
+    async def _execute_open_trade_job(
+        self, job_id: str, signal: TradeSignal, master_state: MasterState, slave_state: SlaveState, t0: float
+    ) -> TradeResult:
+        result = await self._execute_on_slave(signal, master_state, slave_state, t0)
+        status = "confirmed" if result.success else ("blocked" if result.slippage_blocked else "failed")
+        await self._record_trade_job_result(
+            job_id=job_id,
+            job_type="open",
+            result=result.model_dump(mode="json"),
+            success=result.success,
+            status=status,
+            latency_ms=result.latency_ms,
+            error_code=str(result.error_code) if result.error_code is not None else None,
+            error_message=result.error_message,
+        )
+        return result
+
+    async def _close_trade_job(
+        self, job_id: str, magic_number: int, symbol: str, master_state: MasterState, state: SlaveState
+    ):
+        t0 = time.perf_counter()
+        request = {"magic_number": magic_number, "symbol": symbol}
+        job_row = db.get_trade_job(job_id) or {}
+        attempt_no = int(job_row.get("attempts", 0)) + 1
+        try:
+            await self._close_on_slave(magic_number, symbol, master_state, state)
+            latency_ms = round((time.perf_counter() - t0) * 1000, 2)
+            db.record_trade_job_attempt(
+                job_id=job_id,
+                attempt_no=attempt_no,
+                status="confirmed",
+                request=request,
+                response={"status": "ok"},
+                latency_ms=latency_ms,
+            )
+            db.update_trade_job_status(job_id, "confirmed")
+        except Exception as exc:
+            latency_ms = round((time.perf_counter() - t0) * 1000, 2)
+            db.record_trade_job_attempt(
+                job_id=job_id,
+                attempt_no=attempt_no,
+                status="failed",
+                request=request,
+                error_message=str(exc),
+                latency_ms=latency_ms,
+            )
+            db.update_trade_job_status(job_id, "failed", error_message=str(exc))
+            raise
+
+    async def _modify_trade_job(
+        self, job_id: str, modify: ModifySignal, master_state: MasterState, slave_state: SlaveState
+    ):
+        t0 = time.perf_counter()
+        request = modify.model_dump(mode="json")
+        job_row = db.get_trade_job(job_id) or {}
+        attempt_no = int(job_row.get("attempts", 0)) + 1
+        try:
+            await self._modify_sltp_on_slave(modify, master_state, slave_state)
+            latency_ms = round((time.perf_counter() - t0) * 1000, 2)
+            db.record_trade_job_attempt(
+                job_id=job_id,
+                attempt_no=attempt_no,
+                status="confirmed",
+                request=request,
+                response={"status": "ok"},
+                latency_ms=latency_ms,
+            )
+            db.update_trade_job_status(job_id, "confirmed")
+        except Exception as exc:
+            latency_ms = round((time.perf_counter() - t0) * 1000, 2)
+            db.record_trade_job_attempt(
+                job_id=job_id,
+                attempt_no=attempt_no,
+                status="failed",
+                request=request,
+                error_message=str(exc),
+                latency_ms=latency_ms,
+            )
+            db.update_trade_job_status(job_id, "failed", error_message=str(exc))
+            raise
 
     async def _execute_on_slave(
         self, signal: TradeSignal, master_state: MasterState, slave_state: SlaveState, t0: float
@@ -327,6 +825,15 @@ class CopyRouter:
         )
 
         try:
+            # Phase 8: hard limit — max open trades per slave
+            open_count = len(slave_state.open_tickets)
+            if open_count >= acc.max_open_trades:
+                result.slippage_blocked = True
+                result.error_message = (
+                    f"Max open trades limit reached: {open_count}/{acc.max_open_trades}"
+                )
+                return result
+
             if not MT5_AVAILABLE:
                 await asyncio.sleep(0.004)
                 current_price = signal.price

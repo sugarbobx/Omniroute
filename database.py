@@ -110,8 +110,99 @@ def init_db():
                 modified_at  TEXT NOT NULL
             );
 
+            CREATE TABLE IF NOT EXISTS trade_intents (
+                intent_id        TEXT PRIMARY KEY,
+                idempotency_key   TEXT NOT NULL UNIQUE,
+                intent_type       TEXT NOT NULL,
+                master_id         TEXT,
+                magic_number      INTEGER,
+                symbol            TEXT,
+                direction         TEXT,
+                payload_json      TEXT NOT NULL,
+                status            TEXT NOT NULL DEFAULT 'received',
+                error             TEXT,
+                created_at        TEXT NOT NULL,
+                updated_at        TEXT NOT NULL
+            );
+
+            CREATE TABLE IF NOT EXISTS trade_jobs (
+                job_id          TEXT PRIMARY KEY,
+                intent_id       TEXT NOT NULL,
+                account_id      TEXT NOT NULL,
+                master_id       TEXT,
+                job_type        TEXT NOT NULL,
+                symbol          TEXT,
+                slave_symbol    TEXT,
+                request_json    TEXT NOT NULL,
+                status          TEXT NOT NULL DEFAULT 'queued',
+                claimed_by      TEXT,
+                claimed_at      TEXT,
+                started_at      TEXT,
+                finished_at     TEXT,
+                broker_ticket   INTEGER,
+                fill_price      REAL,
+                error_code      TEXT,
+                error_message   TEXT,
+                attempts        INTEGER NOT NULL DEFAULT 0,
+                created_at      TEXT NOT NULL,
+                updated_at      TEXT NOT NULL,
+                FOREIGN KEY(intent_id) REFERENCES trade_intents(intent_id) ON DELETE CASCADE
+            );
+
+            CREATE TABLE IF NOT EXISTS trade_job_attempts (
+                attempt_id      TEXT PRIMARY KEY,
+                job_id          TEXT NOT NULL,
+                attempt_no      INTEGER NOT NULL,
+                status          TEXT NOT NULL,
+                request_json    TEXT,
+                response_json   TEXT,
+                error_code      TEXT,
+                error_message   TEXT,
+                latency_ms      REAL,
+                created_at      TEXT NOT NULL,
+                FOREIGN KEY(job_id) REFERENCES trade_jobs(job_id) ON DELETE CASCADE
+            );
+
+            CREATE TABLE IF NOT EXISTS broker_reconciliations (
+                reconciliation_id TEXT PRIMARY KEY,
+                job_id            TEXT NOT NULL,
+                account_id        TEXT NOT NULL,
+                expected_json     TEXT NOT NULL,
+                actual_json       TEXT NOT NULL,
+                status            TEXT NOT NULL,
+                notes             TEXT,
+                created_at        TEXT NOT NULL,
+                FOREIGN KEY(job_id) REFERENCES trade_jobs(job_id) ON DELETE CASCADE
+            );
+
             CREATE INDEX IF NOT EXISTS idx_slave_positions_lookup
                 ON slave_positions(account_id, magic_number, symbol);
+
+            CREATE INDEX IF NOT EXISTS idx_trade_intents_master
+                ON trade_intents(master_id, magic_number, status);
+
+            CREATE INDEX IF NOT EXISTS idx_trade_jobs_intent
+                ON trade_jobs(intent_id, account_id, status);
+
+            CREATE INDEX IF NOT EXISTS idx_trade_attempts_job
+                ON trade_job_attempts(job_id, attempt_no);
+
+            CREATE TABLE IF NOT EXISTS mt5_workers (
+                worker_id         TEXT PRIMARY KEY,
+                account_id        TEXT,
+                terminal_path     TEXT NOT NULL,
+                worker_role       TEXT NOT NULL DEFAULT 'slave',
+                status            TEXT NOT NULL DEFAULT 'starting',
+                current_job_id    TEXT,
+                current_error     TEXT,
+                last_heartbeat_at TEXT,
+                created_at        TEXT NOT NULL,
+                updated_at        TEXT NOT NULL,
+                FOREIGN KEY(account_id) REFERENCES slaves(account_id) ON DELETE SET NULL
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_mt5_workers_status
+                ON mt5_workers(status, worker_role);
 
             CREATE TABLE IF NOT EXISTS strategies (
                 strategy_id     TEXT PRIMARY KEY,
@@ -165,6 +256,12 @@ def init_db():
         _ensure_column(conn, "masters", "strategy_name", "TEXT")
         _ensure_column(conn, "masters", "forward_test", "INTEGER DEFAULT 0")
         _ensure_column(conn, "masters", "bot_mode", "TEXT DEFAULT 'standalone'")
+        _ensure_column(conn, "trade_jobs", "claimed_by", "TEXT")
+        _ensure_column(conn, "trade_jobs", "claimed_at", "TEXT")
+        _ensure_column(conn, "trade_jobs", "started_at", "TEXT")
+        _ensure_column(conn, "trade_jobs", "finished_at", "TEXT")
+        _ensure_column(conn, "trade_jobs", "retry_after", "TEXT")
+        _ensure_column(conn, "trade_jobs", "max_retries", "INTEGER DEFAULT 3")
         _seed_demo_user(conn)
     logger.info(f"Database ready: {DB_PATH.resolve()}")
 
@@ -278,6 +375,414 @@ def touch_app_session(token: str):
 def delete_app_session(token: str):
     with get_conn() as conn:
         conn.execute("DELETE FROM app_sessions WHERE token=?", (token,))
+
+
+# ── Trade execution journal ──────────────────────────────────────────────────
+
+def save_trade_intent(
+    intent_id: str,
+    idempotency_key: str,
+    intent_type: str,
+    payload: dict,
+    master_id: Optional[str] = None,
+    magic_number: Optional[int] = None,
+    symbol: Optional[str] = None,
+    direction: Optional[str] = None,
+    status: str = "received",
+):
+    now = datetime.utcnow().isoformat()
+    with get_conn() as conn:
+        conn.execute(
+            """
+            INSERT INTO trade_intents
+              (intent_id, idempotency_key, intent_type, master_id, magic_number,
+               symbol, direction, payload_json, status, error, created_at, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?)
+            ON CONFLICT(intent_id) DO UPDATE SET
+              idempotency_key=excluded.idempotency_key,
+              intent_type=excluded.intent_type,
+              master_id=excluded.master_id,
+              magic_number=excluded.magic_number,
+              symbol=excluded.symbol,
+              direction=excluded.direction,
+              payload_json=excluded.payload_json,
+              status=excluded.status,
+              updated_at=excluded.updated_at
+            """,
+            (
+                intent_id,
+                idempotency_key,
+                intent_type,
+                master_id,
+                magic_number,
+                symbol,
+                direction,
+                json.dumps(payload),
+                status,
+                now,
+                now,
+            ),
+        )
+
+
+def get_trade_intent(intent_id: str) -> Optional[dict]:
+    with get_conn() as conn:
+        row = conn.execute(
+            "SELECT * FROM trade_intents WHERE intent_id=?",
+            (intent_id,),
+        ).fetchone()
+    return dict(row) if row else None
+
+
+def update_trade_intent_status(intent_id: str, status: str, error: Optional[str] = None):
+    with get_conn() as conn:
+        conn.execute(
+            """
+            UPDATE trade_intents
+            SET status=?, error=?, updated_at=?
+            WHERE intent_id=?
+            """,
+            (status, error, datetime.utcnow().isoformat(), intent_id),
+        )
+
+
+def save_trade_job(
+    job_id: str,
+    intent_id: str,
+    account_id: str,
+    request: dict,
+    master_id: Optional[str] = None,
+    job_type: str = "open",
+    symbol: Optional[str] = None,
+    slave_symbol: Optional[str] = None,
+    status: str = "queued",
+):
+    now = datetime.utcnow().isoformat()
+    with get_conn() as conn:
+        conn.execute(
+            """
+            INSERT INTO trade_jobs
+              (job_id, intent_id, account_id, master_id, job_type, symbol, slave_symbol,
+               request_json, status, broker_ticket, fill_price, error_code, error_message,
+               attempts, created_at, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL, NULL, NULL, 0, ?, ?)
+            ON CONFLICT(job_id) DO UPDATE SET
+              intent_id=excluded.intent_id,
+              account_id=excluded.account_id,
+              master_id=excluded.master_id,
+              job_type=excluded.job_type,
+              symbol=excluded.symbol,
+              slave_symbol=excluded.slave_symbol,
+              request_json=excluded.request_json,
+              status=excluded.status,
+              updated_at=excluded.updated_at
+            """,
+            (
+                job_id,
+                intent_id,
+                account_id,
+                master_id,
+                job_type,
+                symbol,
+                slave_symbol,
+                json.dumps(request),
+                status,
+                now,
+                now,
+            ),
+        )
+
+
+def update_trade_job_status(
+    job_id: str,
+    status: str,
+    broker_ticket: Optional[int] = None,
+    fill_price: Optional[float] = None,
+    error_code: Optional[str] = None,
+    error_message: Optional[str] = None,
+):
+    final_states = {"confirmed", "blocked", "failed", "dead_letter", "rejected", "completed", "completed_with_errors", "no_targets"}
+    finished_at = datetime.utcnow().isoformat() if status in final_states else None
+    with get_conn() as conn:
+        conn.execute(
+            """
+            UPDATE trade_jobs
+            SET status=?, broker_ticket=?, fill_price=?, error_code=?, error_message=?,
+                attempts=attempts + 1, finished_at=COALESCE(?, finished_at), updated_at=?
+            WHERE job_id=?
+            """,
+            (
+                status,
+                broker_ticket,
+                fill_price,
+                error_code,
+                error_message,
+                finished_at,
+                datetime.utcnow().isoformat(),
+                job_id,
+            ),
+        )
+
+
+def get_trade_job(job_id: str) -> Optional[dict]:
+    with get_conn() as conn:
+        row = conn.execute(
+            "SELECT * FROM trade_jobs WHERE job_id=?",
+            (job_id,),
+        ).fetchone()
+    return dict(row) if row else None
+
+
+def claim_trade_job(job_id: str, worker_id: str) -> bool:
+    now = datetime.utcnow().isoformat()
+    with get_conn() as conn:
+        cur = conn.execute(
+            """
+            UPDATE trade_jobs
+            SET claimed_by=?, claimed_at=?, status='dispatching', updated_at=?
+            WHERE job_id=? AND status IN ('queued', 'retry_wait')
+            """,
+            (worker_id, now, now, job_id),
+        )
+        return cur.rowcount > 0
+
+
+def claim_next_trade_job(worker_id: str, account_id: str) -> Optional[dict]:
+    with get_conn() as conn:
+        row = conn.execute(
+            """
+            SELECT * FROM trade_jobs
+            WHERE account_id=? AND status IN ('queued', 'retry_wait')
+              AND (retry_after IS NULL OR retry_after <= ?)
+            ORDER BY created_at ASC
+            LIMIT 1
+            """,
+            (account_id, datetime.utcnow().isoformat()),
+        ).fetchone()
+        if not row:
+            return None
+        now = datetime.utcnow().isoformat()
+        cur = conn.execute(
+            """
+            UPDATE trade_jobs
+            SET claimed_by=?, claimed_at=?, status='dispatching', updated_at=?
+            WHERE job_id=? AND status IN ('queued', 'retry_wait')
+            """,
+            (worker_id, now, now, row["job_id"]),
+        )
+        if cur.rowcount <= 0:
+            return None
+        row = conn.execute("SELECT * FROM trade_jobs WHERE job_id=?", (row["job_id"],)).fetchone()
+    return dict(row) if row else None
+
+
+def mark_trade_job_started(job_id: str, worker_id: str) -> bool:
+    now = datetime.utcnow().isoformat()
+    with get_conn() as conn:
+        cur = conn.execute(
+            """
+            UPDATE trade_jobs
+            SET status='executing', started_at=COALESCE(started_at, ?), updated_at=?
+            WHERE job_id=? AND claimed_by=?
+            """,
+            (now, now, job_id, worker_id),
+        )
+        return cur.rowcount > 0
+
+
+def mark_trade_job_finished(
+    job_id: str,
+    status: str,
+    broker_ticket: Optional[int] = None,
+    fill_price: Optional[float] = None,
+    error_code: Optional[str] = None,
+    error_message: Optional[str] = None,
+):
+    update_trade_job_status(
+        job_id=job_id,
+        status=status,
+        broker_ticket=broker_ticket,
+        fill_price=fill_price,
+        error_code=error_code,
+        error_message=error_message,
+    )
+
+
+def save_mt5_worker(
+    worker_id: str,
+    account_id: Optional[str],
+    terminal_path: str,
+    worker_role: str = "slave",
+    status: str = "starting",
+    current_job_id: Optional[str] = None,
+    current_error: Optional[str] = None,
+):
+    now = datetime.utcnow().isoformat()
+    with get_conn() as conn:
+        conn.execute(
+            """
+            INSERT INTO mt5_workers
+              (worker_id, account_id, terminal_path, worker_role, status,
+               current_job_id, current_error, last_heartbeat_at, created_at, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(worker_id) DO UPDATE SET
+              account_id=excluded.account_id,
+              terminal_path=excluded.terminal_path,
+              worker_role=excluded.worker_role,
+              status=excluded.status,
+              current_job_id=excluded.current_job_id,
+              current_error=excluded.current_error,
+              updated_at=excluded.updated_at
+            """,
+            (
+                worker_id,
+                account_id,
+                terminal_path,
+                worker_role,
+                status,
+                current_job_id,
+                current_error,
+                now,
+                now,
+                now,
+            ),
+        )
+
+
+def load_mt5_workers() -> list[dict]:
+    with get_conn() as conn:
+        rows = conn.execute("SELECT * FROM mt5_workers").fetchall()
+    return [dict(r) for r in rows]
+
+
+def get_mt5_worker(worker_id: str) -> Optional[dict]:
+    with get_conn() as conn:
+        row = conn.execute(
+            "SELECT * FROM mt5_workers WHERE worker_id=?",
+            (worker_id,),
+        ).fetchone()
+    return dict(row) if row else None
+
+
+def update_mt5_worker(
+    worker_id: str,
+    status: Optional[str] = None,
+    current_job_id: Optional[str] = None,
+    current_error: Optional[str] = None,
+    last_heartbeat_at: bool = False,
+    clear_current_job: bool = False,
+    clear_current_error: bool = False,
+):
+    sets = []
+    vals = []
+    if status is not None:
+        sets.append("status=?")
+        vals.append(status)
+    if current_job_id is not None:
+        sets.append("current_job_id=?")
+        vals.append(current_job_id)
+    elif clear_current_job:
+        sets.append("current_job_id=NULL")
+    if current_error is not None:
+        sets.append("current_error=?")
+        vals.append(current_error)
+    elif clear_current_error:
+        sets.append("current_error=NULL")
+    if last_heartbeat_at:
+        sets.append("last_heartbeat_at=?")
+        vals.append(datetime.utcnow().isoformat())
+    if not sets:
+        return
+    sets.append("updated_at=?")
+    vals.append(datetime.utcnow().isoformat())
+    vals.append(worker_id)
+    with get_conn() as conn:
+        conn.execute(
+            f"UPDATE mt5_workers SET {', '.join(sets)} WHERE worker_id=?",
+            vals,
+        )
+
+
+def claim_mt5_worker(worker_id: str) -> bool:
+    now = datetime.utcnow().isoformat()
+    with get_conn() as conn:
+        cur = conn.execute(
+            """
+            UPDATE mt5_workers
+            SET status='idle', last_heartbeat_at=?, updated_at=?
+            WHERE worker_id=? AND status IN ('starting', 'idle', 'degraded')
+            """,
+            (now, now, worker_id),
+        )
+        return cur.rowcount > 0
+
+
+def delete_mt5_worker(worker_id: str):
+    with get_conn() as conn:
+        conn.execute("DELETE FROM mt5_workers WHERE worker_id=?", (worker_id,))
+
+
+def record_trade_job_attempt(
+    job_id: str,
+    attempt_no: int,
+    status: str,
+    request: Optional[dict] = None,
+    response: Optional[dict] = None,
+    error_code: Optional[str] = None,
+    error_message: Optional[str] = None,
+    latency_ms: Optional[float] = None,
+):
+    with get_conn() as conn:
+        conn.execute(
+            """
+            INSERT INTO trade_job_attempts
+              (attempt_id, job_id, attempt_no, status, request_json, response_json,
+               error_code, error_message, latency_ms, created_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                str(secrets.token_hex(8)),
+                job_id,
+                attempt_no,
+                status,
+                json.dumps(request) if request is not None else None,
+                json.dumps(response) if response is not None else None,
+                error_code,
+                error_message,
+                latency_ms,
+                datetime.utcnow().isoformat(),
+            ),
+        )
+
+
+def record_broker_reconciliation(
+    reconciliation_id: str,
+    job_id: str,
+    account_id: str,
+    expected: dict,
+    actual: dict,
+    status: str,
+    notes: Optional[str] = None,
+):
+    with get_conn() as conn:
+        conn.execute(
+            """
+            INSERT INTO broker_reconciliations
+              (reconciliation_id, job_id, account_id, expected_json, actual_json,
+               status, notes, created_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                reconciliation_id,
+                job_id,
+                account_id,
+                json.dumps(expected),
+                json.dumps(actual),
+                status,
+                notes,
+                datetime.utcnow().isoformat(),
+            ),
+        )
 
 
 # ── Masters ──────────────────────────────────────────────────────────────────
@@ -679,4 +1184,133 @@ def get_strategy_results(bot_id: str, limit: int = 200) -> list[dict]:
             SELECT * FROM strategy_results WHERE bot_id=?
             ORDER BY executed_at DESC LIMIT ?
         """, (bot_id, limit)).fetchall()
+    return [dict(r) for r in rows]
+
+
+# ── Retry and dead-letter helpers ─────────────────────────────────────────────
+
+def schedule_job_retry(
+    job_id: str,
+    retry_after: str,
+    error_code: Optional[str] = None,
+    error_message: Optional[str] = None,
+):
+    now = datetime.utcnow().isoformat()
+    with get_conn() as conn:
+        conn.execute(
+            """
+            UPDATE trade_jobs
+            SET status='retry_wait', retry_after=?, error_code=?, error_message=?,
+                attempts=attempts + 1, updated_at=?
+            WHERE job_id=?
+            """,
+            (retry_after, error_code, error_message, now, job_id),
+        )
+
+
+def dead_letter_job(
+    job_id: str,
+    error_code: Optional[str] = None,
+    error_message: Optional[str] = None,
+):
+    now = datetime.utcnow().isoformat()
+    with get_conn() as conn:
+        conn.execute(
+            """
+            UPDATE trade_jobs
+            SET status='dead_letter', finished_at=COALESCE(finished_at, ?),
+                error_code=?, error_message=?, attempts=attempts + 1, updated_at=?
+            WHERE job_id=?
+            """,
+            (now, error_code, error_message, now, job_id),
+        )
+
+
+# ── Observability queries ─────────────────────────────────────────────────────
+
+def get_job_metrics() -> dict:
+    with get_conn() as conn:
+        rows = conn.execute(
+            "SELECT status, COUNT(*) AS n FROM trade_jobs GROUP BY status"
+        ).fetchall()
+        total = conn.execute("SELECT COUNT(*) AS n FROM trade_jobs").fetchone()["n"]
+        avg_latency = conn.execute(
+            """
+            SELECT AVG(latency_ms) AS avg_ms
+            FROM trade_job_attempts
+            WHERE status='confirmed' AND latency_ms IS NOT NULL
+            """
+        ).fetchone()["avg_ms"]
+        rec_counts = conn.execute(
+            "SELECT status, COUNT(*) AS n FROM broker_reconciliations GROUP BY status"
+        ).fetchall()
+        worker_counts = conn.execute(
+            "SELECT status, COUNT(*) AS n FROM mt5_workers GROUP BY status"
+        ).fetchall()
+
+    by_status = {r["status"]: r["n"] for r in rows}
+    rec_by_status = {r["status"]: r["n"] for r in rec_counts}
+    worker_by_status = {r["status"]: r["n"] for r in worker_counts}
+
+    return {
+        "jobs_total": total,
+        "jobs_by_status": by_status,
+        "jobs_confirmed": by_status.get("confirmed", 0),
+        "jobs_failed": by_status.get("failed", 0),
+        "jobs_dead_letter": by_status.get("dead_letter", 0),
+        "jobs_queued": by_status.get("queued", 0) + by_status.get("retry_wait", 0),
+        "avg_execution_latency_ms": round(avg_latency, 2) if avg_latency else None,
+        "reconciliations_by_status": rec_by_status,
+        "workers_by_status": worker_by_status,
+    }
+
+
+def get_recent_jobs(limit: int = 100, account_id: Optional[str] = None) -> list[dict]:
+    with get_conn() as conn:
+        if account_id:
+            rows = conn.execute(
+                "SELECT * FROM trade_jobs WHERE account_id=? ORDER BY created_at DESC LIMIT ?",
+                (account_id, limit),
+            ).fetchall()
+        else:
+            rows = conn.execute(
+                "SELECT * FROM trade_jobs ORDER BY created_at DESC LIMIT ?",
+                (limit,),
+            ).fetchall()
+    return [dict(r) for r in rows]
+
+
+def get_job_attempts(job_id: str) -> list[dict]:
+    with get_conn() as conn:
+        rows = conn.execute(
+            "SELECT * FROM trade_job_attempts WHERE job_id=? ORDER BY attempt_no",
+            (job_id,),
+        ).fetchall()
+    return [dict(r) for r in rows]
+
+
+def get_recent_reconciliations(limit: int = 100) -> list[dict]:
+    with get_conn() as conn:
+        rows = conn.execute(
+            "SELECT * FROM broker_reconciliations ORDER BY created_at DESC LIMIT ?",
+            (limit,),
+        ).fetchall()
+    return [dict(r) for r in rows]
+
+
+def get_slave_positions_by_ticket(account_id: str, ticket: int) -> list[dict]:
+    with get_conn() as conn:
+        rows = conn.execute(
+            "SELECT * FROM slave_positions WHERE account_id=? AND ticket=?",
+            (account_id, ticket),
+        ).fetchall()
+    return [dict(r) for r in rows]
+
+
+def get_recent_intents(limit: int = 100) -> list[dict]:
+    with get_conn() as conn:
+        rows = conn.execute(
+            "SELECT * FROM trade_intents ORDER BY created_at DESC LIMIT ?",
+            (limit,),
+        ).fetchall()
     return [dict(r) for r in rows]

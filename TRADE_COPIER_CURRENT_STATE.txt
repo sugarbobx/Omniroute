@@ -1,0 +1,119 @@
+OmniRoute trade copier current state
+
+The copier is now a persisted signal router with per-slave jobs and an audit trail.
+
+What it does today
+
+1. A master trade signal arrives at `POST /trade-signal`.
+2. The signal is stored as a durable trade intent before any broker action.
+3. `CopyRouter` resolves the master from `magic_number`.
+4. The router finds all linked slaves that are enabled and connected.
+5. For each eligible slave, the router creates one durable job row.
+6. Each job is executed independently and its attempt/result is written back to SQLite.
+7. `POST /trade-close` and `POST /trade-modify` follow the same intent/job pattern.
+
+Execution behavior
+
+- Symbol translation runs through global, master, then slave symbol maps.
+- Slippage protection runs before execution.
+- Lot size is derived from the slave sizing mode and then constrained by the protection profile.
+- SL/TP are translated to slave prices from the master entry distance.
+- Successful open trades are recorded in `slave_positions`.
+- Close and modify actions are routed per linked slave and logged.
+- Simulation mode still exists when MT5 is unavailable.
+
+Current persistence model
+
+- `trade_intents`
+- `trade_jobs`
+- `trade_job_attempts`
+- `broker_reconciliations`
+- `slave_positions`
+- `modify_log`
+
+What this means operationally
+
+- The copier is no longer just an in-memory fan-out loop.
+- It now has a durable journal for acceptance, execution, and later reconciliation.
+- The remaining work is retry logic, recovery, and broker-state reconciliation.
+
+MT5 topology constraint
+
+The key production constraint is this:
+
+- one MT5 terminal process should not be treated as a shared execution bus for unrelated account roles
+- if the master and slave both need to be active at the same time, they should not fight over the same terminal session
+
+Practical interpretation
+
+- if a master only publishes signals, it does not need to occupy the same live execution terminal as the slaves
+- if a master also needs live trading, it should be isolated from the slave execution terminals
+- the slave side should own the execution terminals
+
+Recommended production model
+
+1. One control plane
+- FastAPI app for auth, admin, status, and signal intake.
+- SQLite is fine for early development, but this should move to Postgres for production durability.
+
+2. One broker-execution worker per MT5 terminal
+- Each worker owns a single MT5 terminal session.
+- The worker connects only to one broker/account context at a time.
+- Slave execution jobs are pushed to the worker, not executed directly in the request thread.
+
+3. One master signal source
+- The master should be a signal producer, not a competing execution session.
+- If the master is a live MT5 account, keep it on a separate terminal instance from the slave workers.
+
+4. A real job queue
+- Use a durable queue so open/close/modify jobs survive process restarts.
+- Each slave gets its own job state and retry policy.
+
+How to handle 1 master and up to 5 slaves
+
+- Put the master in a signal-only role whenever possible.
+- Run up to 5 slave workers, one per slave account or one per broker terminal profile.
+- Do not try to have one MT5 instance continuously switch between the master and all slaves in the same execution path.
+- If a master must also trade, run it in a separate terminal process and keep slave execution isolated.
+
+Best-fit technical stack
+
+Control plane
+- `FastAPI`
+- `Pydantic`
+- `PostgreSQL`
+- `SQLAlchemy` or `SQLModel`
+
+Execution layer
+- `Python workers`
+- `Celery` or `RQ` or a lightweight custom queue backed by Postgres
+- `Redis` only if you want faster transient queues and pub/sub
+
+Broker layer
+- `MetaTrader 5` terminal per execution worker
+- one worker = one terminal session = one account context
+
+Ops and reliability
+- `Docker` or Windows service wrappers, depending on VPS constraints
+- `systemd` on Linux VPS, `pm2` or scheduled service wrappers on Windows VPS
+- structured logs plus metrics
+- health checks and heartbeat monitoring
+
+Production priorities
+
+- isolate master signal generation from slave execution
+- make job execution durable and replayable
+- keep one account context per worker
+- add reconciliation so broker reality wins over in-memory assumptions
+- add hard limits for exposure, retries, and duplicate execution
+
+Bottom line
+
+The current code is usable for a controlled environment, but for production the copier should be refactored into:
+
+- control plane
+- durable queue
+- isolated MT5 worker processes
+- reconciliation layer
+
+That is the clean way to support one master feeding up to five slaves without MT5 session collisions.
