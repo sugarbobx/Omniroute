@@ -171,7 +171,10 @@ async def provision_account(
     shared _mt5_lock. This keeps MT5 singleton access serialised.
     """
     try:
-        copy_golden_image(account_id)
+        # Run the blocking copy in a thread so the asyncio event loop stays responsive.
+        # shutil.copytree on a 500MB+ MT5 install can take 2-3 minutes.
+        loop = asyncio.get_event_loop()
+        await loop.run_in_executor(None, copy_golden_image, account_id)
         launch_terminal(account_id, login=login, password=password, server=server)
         # Wait for the terminal to start and connect to the broker.
         # First launch takes ~30s (broker handshake + data download); subsequent launches are faster.
