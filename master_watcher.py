@@ -2,14 +2,11 @@
 master_watcher.py — Autonomous master account watcher for OmniRoute.
 
 Replaces the old EA signal-push model. A MasterWatcher:
-  • Holds its own MT5 session logged in with the investor (read-only) password.
-  • Polls mt5.positions_get() + mt5.orders_get() every POLL_INTERVAL seconds.
-  • Diffs each snapshot against the previous one to detect:
-      - new ticket    → open intent
-      - gone ticket   → close intent
-      - SL/TP change  → modify intent
-  • On first connect (or any restart), records existing positions as the
-    baseline so pre-existing trades are NEVER emitted as new intents.
+  • Uses the router's shared _mt5_lock to serialise all MT5 access.
+  • On each poll cycle: acquire lock → switch to master terminal → read positions → release.
+  • Diffs each snapshot against the previous one to detect open / close / modify events.
+  • On first connect (or restart), records existing positions as the baseline so
+    pre-existing trades are NEVER emitted as new intents.
   • Runs as a single asyncio task per master account.
 """
 
@@ -35,17 +32,14 @@ except ImportError:
     mt5 = None  # type: ignore
     MT5_AVAILABLE = False
 
-POLL_INTERVAL = 1.5          # seconds between position polls
-CONNECT_RETRY  = 10          # seconds between reconnect attempts after IPC loss
-MAX_CONNECT_RETRIES = 20     # give up after this many consecutive IPC failures
+POLL_INTERVAL = 1.5   # seconds between position polls
 
 
 def _pos_to_dict(pos) -> dict:
-    """Convert an mt5.TradePosition namedtuple to a plain dict."""
     return {
         "ticket":      int(pos.ticket),
         "symbol":      str(pos.symbol),
-        "type":        int(pos.type),          # 0=BUY, 1=SELL
+        "type":        int(pos.type),
         "volume":      float(pos.volume),
         "price_open":  float(pos.price_open),
         "sl":          float(pos.sl),
@@ -84,29 +78,38 @@ def _trade_type_from_mt5(mt5_type: int) -> TradeType:
 
 class MasterWatcher:
     """
-    One instance per master account. Runs as a single asyncio task.
+    One instance per master account.  Shares the router's _mt5_lock so that
+    watcher polls and worker trade executions never race on the MT5 singleton.
     """
 
-    def __init__(self, master_id: str, login: int, investor_password: str,
-                 server: str, terminal_path: Optional[str], router: "CopyRouter"):
+    def __init__(
+        self,
+        master_id: str,
+        login: int,
+        investor_password: str,
+        server: str,
+        terminal_path: Optional[str],
+        router: "CopyRouter",
+        mt5_lock: Optional[asyncio.Lock] = None,
+    ):
         self.master_id         = master_id
         self.login             = login
         self.investor_password = investor_password
         self.server            = server
-        self.terminal_path     = terminal_path  # path to portable terminal exe; None = shared
+        self.terminal_path     = terminal_path   # path to dedicated portable terminal exe
         self.router            = router
+        self._mt5_lock         = mt5_lock        # shared with router workers; None → sim mode
 
-        self._snapshot: dict[int, dict] = {}   # ticket → position/order dict
-        self._baseline: set[int] = set()        # tickets existing at startup
-        self._connected    = False
-        self._stop_event   = asyncio.Event()
+        self._snapshot: dict[int, dict] = {}
+        self._baseline: set[int]        = set()
+        self._stop_event = asyncio.Event()
         self._task: Optional[asyncio.Task] = None
 
     # ── Public API ────────────────────────────────────────────────────────────
 
     def start(self):
         self._task = asyncio.create_task(self._run(), name=f"watcher:{self.master_id}")
-        logger.info(f"[watcher:{self.master_id}] task started")
+        logger.info(f"[watcher:{self.master_id}] task started (terminal={self.terminal_path})")
 
     def stop(self):
         self._stop_event.set()
@@ -116,89 +119,75 @@ class MasterWatcher:
     # ── Main loop ─────────────────────────────────────────────────────────────
 
     async def _run(self):
-        loop = asyncio.get_event_loop()
-        retries = 0
+        await self._establish_baseline()
 
         while not self._stop_event.is_set():
-            if not self._connected:
-                ok = await loop.run_in_executor(None, self._connect)
-                if ok:
-                    self._connected = True
-                    retries = 0
-                    await self._establish_baseline(loop)
-                else:
-                    retries += 1
-                    if retries >= MAX_CONNECT_RETRIES:
-                        logger.error(f"[watcher:{self.master_id}] giving up after {retries} connect failures")
-                        break
-                    logger.warning(f"[watcher:{self.master_id}] connect failed, retry {retries}/{MAX_CONNECT_RETRIES}")
-                    await asyncio.sleep(CONNECT_RETRY)
-                    continue
-
             try:
-                new_snapshot = await loop.run_in_executor(None, self._poll)
-                if new_snapshot is None:
-                    # IPC lost
-                    self._connected = False
-                    logger.warning(f"[watcher:{self.master_id}] IPC lost, will reconnect")
-                    await asyncio.sleep(CONNECT_RETRY)
-                    continue
-
-                await self._process_diff(self._snapshot, new_snapshot)
-                self._snapshot = new_snapshot
-
+                new_snapshot = await self._locked_poll()
+                if new_snapshot is not None:
+                    await self._process_diff(self._snapshot, new_snapshot)
+                    self._snapshot = new_snapshot
+                else:
+                    logger.debug(f"[watcher:{self.master_id}] terminal not ready, skipping diff")
             except asyncio.CancelledError:
                 break
             except Exception as exc:
                 logger.error(f"[watcher:{self.master_id}] poll error: {exc}")
-                self._connected = False
-
             await asyncio.sleep(POLL_INTERVAL)
 
-        await loop.run_in_executor(None, self._disconnect)
         logger.info(f"[watcher:{self.master_id}] stopped")
 
-    # ── MT5 calls (run in executor) ───────────────────────────────────────────
+    # ── Lock-guarded MT5 access ───────────────────────────────────────────────
 
-    def _connect(self) -> bool:
+    async def _locked_poll(self) -> Optional[dict[int, dict]]:
+        """Acquire the shared lock, switch to the master terminal, read positions."""
         if not MT5_AVAILABLE:
-            logger.info(f"[watcher:{self.master_id}] MT5 not available — simulation mode")
-            return True
+            return {}
+        loop = asyncio.get_event_loop()
+        lock = self._mt5_lock or asyncio.Lock()
+        async with lock:
+            ok = await loop.run_in_executor(None, self._connect_once)
+            if not ok:
+                return None
+            return await loop.run_in_executor(None, self._read_snapshot)
+
+    def _connect_once(self) -> bool:
+        """
+        Ensure MT5 IPC is pointing at this master's terminal.
+        Fast path: already on the right account (no reinitialise needed).
+        Slow path: switch terminal via mt5.initialize(path=...).
+        """
         try:
-            kwargs = dict(login=self.login, password=self.investor_password,
-                          server=self.server, timeout=60_000)
+            info = mt5.account_info()
+            if info and info.login == self.login:
+                return True   # already on this account
+
+            kwargs: dict = dict(login=self.login, password=self.investor_password,
+                                server=self.server, timeout=60_000)
             if self.terminal_path:
                 kwargs["path"] = self.terminal_path
-            ok = mt5.initialize(**kwargs)
-            if not ok:
-                logger.debug(f"[watcher:{self.master_id}] mt5.initialize failed: {mt5.last_error()}")
+
+            if not mt5.initialize(**kwargs):
+                logger.debug(f"[watcher:{self.master_id}] initialize failed: {mt5.last_error()}")
                 return False
+
             info = mt5.account_info()
-            if not info or info.login != self.login:
-                logger.debug(f"[watcher:{self.master_id}] login mismatch after initialize")
-                mt5.shutdown()
-                return False
-            logger.info(f"[watcher:{self.master_id}] connected login={self.login} server={self.server}")
-            return True
+            if info and info.login == self.login:
+                logger.info(f"[watcher:{self.master_id}] connected to login={self.login} server={self.server}")
+                return True
+
+            logger.debug(f"[watcher:{self.master_id}] login mismatch after initialize")
+            return False
         except Exception as exc:
-            logger.error(f"[watcher:{self.master_id}] connect exception: {exc}")
+            logger.debug(f"[watcher:{self.master_id}] _connect_once: {exc}")
             return False
 
-    def _disconnect(self):
-        if MT5_AVAILABLE:
-            try:
-                mt5.shutdown()
-            except Exception:
-                pass
-
-    def _poll(self) -> Optional[dict[int, dict]]:
-        """Return current snapshot dict, or None if IPC is lost."""
-        if not MT5_AVAILABLE:
-            return {}   # empty snapshot in sim mode
+    def _read_snapshot(self) -> Optional[dict[int, dict]]:
+        """Return current snapshot. MT5 must already be connected (called under lock)."""
         try:
             positions = mt5.positions_get() or []
             orders    = mt5.orders_get()    or []
-            snapshot = {}
+            snapshot: dict[int, dict] = {}
             for p in positions:
                 d = _pos_to_dict(p)
                 snapshot[d["ticket"]] = d
@@ -207,28 +196,27 @@ class MasterWatcher:
                 snapshot[d["ticket"]] = d
             return snapshot
         except Exception as exc:
-            logger.error(f"[watcher:{self.master_id}] poll exception: {exc}")
+            logger.error(f"[watcher:{self.master_id}] _read_snapshot: {exc}")
             return None
 
     # ── Baseline ──────────────────────────────────────────────────────────────
 
-    async def _establish_baseline(self, loop: asyncio.AbstractEventLoop):
+    async def _establish_baseline(self):
         """
-        On first connect (or restart), capture existing positions as baseline.
-        These tickets will never generate trade intents — only changes from
+        Record whatever positions exist right now as the startup baseline.
+        These tickets will never become trade intents — only new changes from
         this point forward are actionable.
         """
-        snap = await loop.run_in_executor(None, self._poll)
+        snap = await self._locked_poll()
         if snap is None:
             snap = {}
 
-        # Merge with any persisted baseline from a previous run
         persisted = db.get_watcher_baseline(self.master_id)
         combined  = set(snap.keys()) | persisted
 
         if combined:
             db.save_watcher_baseline(self.master_id, {t: snap.get(t, {}) for t in combined})
-            logger.info(f"[watcher:{self.master_id}] baseline recorded: {len(combined)} ticket(s)")
+            logger.info(f"[watcher:{self.master_id}] baseline: {len(combined)} ticket(s)")
 
         self._baseline = combined
         self._snapshot = snap
@@ -239,9 +227,9 @@ class MasterWatcher:
         old_tickets = set(old.keys())
         new_tickets = set(new.keys())
 
-        opened  = new_tickets - old_tickets - self._baseline
-        closed  = old_tickets - new_tickets - self._baseline
-        common  = old_tickets & new_tickets - self._baseline
+        opened = new_tickets - old_tickets - self._baseline
+        closed = old_tickets - new_tickets - self._baseline
+        common = (old_tickets & new_tickets) - self._baseline
 
         for ticket in opened:
             await self._emit_open(new[ticket])
@@ -252,19 +240,21 @@ class MasterWatcher:
         for ticket in common:
             await self._emit_modify_if_changed(old[ticket], new[ticket])
 
-        # Once a baseline ticket is no longer present, remove it from baseline
+        # Prune closed baseline tickets so they don't reappear after restart
         gone_baseline = self._baseline - new_tickets
         if gone_baseline:
             self._baseline -= gone_baseline
-            # Prune from DB as well so they don't reappear after restart
             remaining = {t: new.get(t, {}) for t in self._baseline}
             db.save_watcher_baseline(self.master_id, remaining)
 
     # ── Intent emitters ───────────────────────────────────────────────────────
 
     async def _emit_open(self, pos: dict):
-        logger.info(f"[watcher:{self.master_id}] OPEN detected ticket={pos['ticket']} {pos.get('symbol')} {pos.get('type')}")
-        intent_id = str(uuid.uuid4())[:12]
+        logger.info(
+            f"[watcher:{self.master_id}] OPEN ticket={pos['ticket']} "
+            f"{pos.get('symbol')} type={pos.get('type')}"
+        )
+        intent_id  = str(uuid.uuid4())[:12]
         trade_type = _trade_type_from_mt5(pos["type"])
         signal = TradeSignal(
             signal_id    = intent_id,
@@ -274,7 +264,7 @@ class MasterWatcher:
             price        = pos["price_open"],
             sl           = pos["sl"],
             tp           = pos["tp"],
-            magic_number = pos.get("magic", 0) or self._magic_number_for_master(),
+            magic_number = pos.get("magic", 0) or self._magic_for_master(),
             comment      = pos.get("comment", "OmniRoute"),
         )
         try:
@@ -283,8 +273,8 @@ class MasterWatcher:
             logger.error(f"[watcher:{self.master_id}] route_signal failed: {exc}")
 
     async def _emit_close(self, pos: dict):
-        logger.info(f"[watcher:{self.master_id}] CLOSE detected ticket={pos['ticket']} {pos.get('symbol')}")
-        magic = pos.get("magic", 0) or self._magic_number_for_master()
+        logger.info(f"[watcher:{self.master_id}] CLOSE ticket={pos['ticket']} {pos.get('symbol')}")
+        magic = pos.get("magic", 0) or self._magic_for_master()
         try:
             await self.router.route_close(magic, pos["symbol"])
         except Exception as exc:
@@ -296,12 +286,12 @@ class MasterWatcher:
         if not (sl_changed or tp_changed):
             return
         logger.info(
-            f"[watcher:{self.master_id}] MODIFY detected ticket={new['ticket']} "
+            f"[watcher:{self.master_id}] MODIFY ticket={new['ticket']} "
             f"SL {old.get('sl')}→{new.get('sl')} TP {old.get('tp')}→{new.get('tp')}"
         )
         intent_id = str(uuid.uuid5(uuid.NAMESPACE_URL,
                                     f"modify|{self.master_id}|{new['ticket']}|{time.time()}"))
-        magic = new.get("magic", 0) or self._magic_number_for_master()
+        magic = new.get("magic", 0) or self._magic_for_master()
         modify = ModifySignal(
             magic_number = magic,
             symbol       = new["symbol"],
@@ -314,6 +304,6 @@ class MasterWatcher:
         except Exception as exc:
             logger.error(f"[watcher:{self.master_id}] route_modify failed: {exc}")
 
-    def _magic_number_for_master(self) -> int:
+    def _magic_for_master(self) -> int:
         state = self.router.masters.get(self.master_id)
         return state.account.magic_number if state else 0

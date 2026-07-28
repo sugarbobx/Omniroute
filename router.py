@@ -122,32 +122,20 @@ class CopyRouter:
             s_state.account.master_ids = db.get_masters_for_slave(s_id)
         logger.info(f"Loaded {len(self.masters)} masters, {len(self.slaves)} slaves")
 
-        # Probe MT5 at startup (non-blocking, pathless — just log whether a terminal is up).
-        if MT5_AVAILABLE:
-            ok = mt5.initialize(timeout=10_000)
-            if ok:
-                logger.info("MT5 IPC available at startup")
-                mt5.shutdown()
-            else:
-                logger.info("No MT5 terminal running at startup — slaves will connect via provision_slave")
-
+        # Provision masters (copy image + launch terminal + start watcher) as background tasks.
         for ms in self.masters.values():
-            await self._connect_master(ms)
+            asyncio.create_task(
+                self._provision_and_watch(ms.account.master_id),
+                name=f"provision_master:{ms.account.master_id}",
+            )
 
-        # Connect slaves as background tasks so the server starts immediately.
-        # UI polls /slaves/{id}/provision_status for live progress.
+        # Provision slaves as background tasks — UI polls /provision_status for progress.
         for ss in self.slaves.values():
             asyncio.create_task(self.provision_slave(ss))
             self._ensure_mt5_worker(ss.account)
             self._start_worker_task(ss.account.account_id)
 
         asyncio.create_task(self._heartbeat_monitor(), name="heartbeat_monitor")
-
-        # Start a watcher for each enabled, non-virtual master
-        for ms in self.masters.values():
-            if ms.account.enabled and ms.account.terminal_path != "virtual":
-                self._start_watcher(ms.account.master_id)
-
         notifier.notify_bridge_started(len(self.masters), len(self.slaves))
 
     async def shutdown(self):
@@ -173,11 +161,13 @@ class CopyRouter:
         self.masters[account.master_id] = state
         self._magic_index[account.magic_number] = account.master_id
         db.save_master(account, owner_user_id=owner_user_id)
-        await self._connect_master(state)
-        if account.enabled and account.terminal_path != "virtual":
-            self._start_watcher(account.master_id)
+        # Provision dedicated terminal + start watcher in background
+        asyncio.create_task(
+            self._provision_and_watch(account.master_id),
+            name=f"provision_master:{account.master_id}",
+        )
         self._log_event("INFO", f"Master added: {account.label} magic={account.magic_number}", master_id=account.master_id)
-        return {"status": "added", "master_id": account.master_id, "connected": state.status == ConnectionStatus.CONNECTED}
+        return {"status": "provisioning", "master_id": account.master_id}
 
     def remove_master(self, master_id: str) -> dict:
         if master_id not in self.masters:
@@ -363,22 +353,66 @@ class CopyRouter:
             return
         acc = state.account
         investor_pw = db.get_master_investor_password(master_id) or db.get_master_password(master_id)
+        # Use the provisioned terminal path when available; None falls back to any running terminal
+        default_path = "C:\\Program Files\\MetaTrader 5\\terminal64.exe"
+        terminal_path = acc.terminal_path if acc.terminal_path not in (default_path, "virtual", None, "") else None
         watcher = MasterWatcher(
             master_id=master_id,
             login=acc.login,
             investor_password=investor_pw,
             server=acc.server,
-            terminal_path=acc.terminal_path if acc.terminal_path != "C:\\Program Files\\MetaTrader 5\\terminal64.exe" else None,
+            terminal_path=terminal_path,
             router=self,
+            mt5_lock=self._mt5_lock,   # share the router's lock — no MT5 singleton conflicts
         )
         watcher.start()
         self._watchers[master_id] = watcher
-        logger.info(f"Watcher started for master {master_id}")
+        logger.info(f"Watcher started for master {master_id} terminal={terminal_path}")
 
     def _stop_watcher(self, master_id: str):
         watcher = self._watchers.pop(master_id, None)
         if watcher:
             watcher.stop()
+
+    async def _provision_and_watch(self, master_id: str):
+        """
+        Background task: copy golden image → launch terminal → start watcher.
+        Idempotent: if the terminal folder already exists it is reused.
+        """
+        state = self.masters.get(master_id)
+        if not state:
+            return
+        acc = state.account
+        investor_pw = db.get_master_investor_password(master_id) or db.get_master_password(master_id)
+
+        try:
+            result = await provisioning.provision_account(
+                account_id=master_id,
+                login=acc.login,
+                password=investor_pw,
+                server=acc.server,
+                role="master_watcher",
+            )
+            if result["status"] == "error":
+                logger.error(f"[provision_master:{master_id}] {result.get('error')}")
+                state.status = ConnectionStatus.ERROR
+                state.error  = result.get("error")
+                return
+
+            terminal_path = result["terminal_path"]
+            acc.terminal_path = terminal_path
+            db.update_master(master_id, {"terminal_path": terminal_path})
+            logger.info(f"[provision_master:{master_id}] terminal launched: {terminal_path}")
+
+        except Exception as exc:
+            logger.error(f"[provision_master:{master_id}] exception: {exc}")
+            state.status = ConnectionStatus.ERROR
+            state.error  = str(exc)
+            return
+
+        if acc.enabled:
+            self._start_watcher(master_id)
+        state.last_ping = datetime.utcnow()
 
     async def _worker_loop(self, worker_id: str, account_id: str):
         db.update_mt5_worker(worker_id, status="idle", last_heartbeat_at=True)
@@ -1183,82 +1217,71 @@ class CopyRouter:
 
     async def provision_slave(self, state: SlaveState) -> dict:
         """
-        Connect slave to MT5.  Runs all blocking MT5 calls in a thread executor so
-        the event loop stays responsive during the ~70–250 s cross-broker server switch.
-
-        mt5.login() has no timeout parameter; after it returns (even with IPC timeout),
-        we re-initialize IPC and verify account_info() — the terminal often completes
-        the server switch even when the IPC response is lost.
+        Background task: copy golden image → launch terminal → connect via shared lock.
+        Fully automatic — user never needs to touch MT5 manually.
         """
-        acc = state.account
-        aid = acc.account_id
+        acc  = state.account
+        aid  = acc.account_id
         loop = asyncio.get_event_loop()
 
-        def _set(step, msg):
-            self._provision_status[aid] = {"step": step, "message": msg, "done": False, "error": None}
+        def _set(step, msg, done=False, error=None):
+            self._provision_status[aid] = {"step": step, "message": msg, "done": done, "error": error}
 
         try:
-            _set(3, "Connecting to MT5…")
-
             if not MT5_AVAILABLE:
                 state.equity, state.balance = 10_000.0, 10_000.0
                 state.status    = ConnectionStatus.CONNECTED
                 state.last_ping = datetime.utcnow()
-                self._provision_status[aid] = {"step": 5, "message": "Connected (simulation)", "done": True, "error": None}
+                _set(5, "Connected (simulation)", done=True)
                 notifier.notify_slave_connected(acc.label, aid, acc.server, state.equity)
                 return {"status": "connected", "equity": state.equity}
 
+            # ── Step 1-2: copy golden image + launch portable terminal ─────────
+            _set(1, "Copying MT5 terminal image…")
+            result = await provisioning.provision_account(
+                account_id=aid,
+                login=acc.login,
+                password=db.get_slave_password(aid) or acc.password,
+                server=acc.server,
+                role="slave",
+            )
+            if result["status"] == "error":
+                raise RuntimeError(result.get("error", "Provisioning failed"))
+
+            terminal_path = result["terminal_path"]
+            acc.terminal_path = terminal_path
+            db.update_slave(aid, {"terminal_path": terminal_path})
+            logger.info(f"[provision_slave:{aid}] terminal launched: {terminal_path}")
+
+            # ── Step 3: wait for IPC ready (retry under lock, up to ~120 s) ───
+            _pwd = db.get_slave_password(aid) or acc.password
             lock = self._mt5_lock or asyncio.Lock()
-            async with lock:
-                # Step 3 — connect MT5 IPC.
-                # NOTE: mt5.initialize(path=...) does not work on this setup;
-                # always use pathless initialize() which connects to any running terminal.
-                _set(3, "Connecting to MT5 IPC…")
-                if not mt5.terminal_info():
-                    ok = await loop.run_in_executor(None, lambda: mt5.initialize(timeout=60_000))
-                    if not ok:
-                        raise RuntimeError(
-                            f"MT5 IPC unavailable: {mt5.last_error()}. "
-                            "Ensure MetaTrader 5 is open and logged in."
-                        )
+            connected = False
+            for attempt in range(1, 25):          # 24 × 5 s = 120 s max
+                _set(3, f"Waiting for MT5 terminal to be ready… ({attempt}/24)")
+                async with lock:
+                    ok = await loop.run_in_executor(None, lambda: mt5.initialize(
+                        path=terminal_path, login=acc.login,
+                        password=_pwd, server=acc.server, timeout=8_000,
+                    ))
+                    if ok:
+                        info = mt5.account_info()
+                        if info and info.login == acc.login:
+                            state.equity  = info.equity
+                            state.balance = info.balance
+                            connected = True
+                            break
+                await asyncio.sleep(5)
 
-                # Already on the right account — nothing to do.
-                info = mt5.account_info()
-                if info and info.login == acc.login:
-                    state.equity, state.balance = info.equity, info.balance
-                    state.status    = ConnectionStatus.CONNECTED
-                    state.last_ping = datetime.utcnow()
-                    self._provision_status[aid] = {"step": 5, "message": "Connected", "done": True, "error": None}
-                    notifier.notify_slave_connected(acc.label, aid, acc.server, state.equity)
-                    return {"status": "connected", "equity": state.equity}
-
-                # Step 4 — switch account.
-                _set(4, "Logging in to broker (may take several minutes on first connect)…")
-                _pwd = db.get_slave_password(acc.account_id) or acc.password
-                await loop.run_in_executor(
-                    None,
-                    lambda: mt5.login(acc.login, password=_pwd, server=acc.server),
+            if not connected:
+                raise RuntimeError(
+                    f"MT5 terminal did not become ready after 120 s "
+                    f"(login={acc.login} server={acc.server})"
                 )
-
-                # After login (or IPC timeout), re-initialize and verify.
-                # The terminal may have completed the switch even if IPC response was lost.
-                _set(4, "Verifying connection…")
-                if not mt5.terminal_info():
-                    await loop.run_in_executor(None, lambda: mt5.initialize(timeout=60_000))
-
-                info = mt5.account_info()
-                if not info or info.login != acc.login:
-                    raise RuntimeError(
-                        f"MT5 login failed: {mt5.last_error()}. "
-                        "Please open the slave MT5 terminal and manually login to "
-                        f"{acc.server} (account {acc.login}), then click Reconnect."
-                    )
-
-                state.equity, state.balance = info.equity, info.balance
 
             state.status    = ConnectionStatus.CONNECTED
             state.last_ping = datetime.utcnow()
-            self._provision_status[aid] = {"step": 5, "message": "Connected", "done": True, "error": None}
+            _set(5, "Connected", done=True)
             notifier.notify_slave_connected(acc.label, aid, acc.server, state.equity)
             return {"status": "connected", "equity": state.equity}
 
@@ -1267,7 +1290,7 @@ class CopyRouter:
             logger.error(f"provision_slave [{acc.label}]: {err}")
             state.status = ConnectionStatus.ERROR
             state.error  = err
-            self._provision_status[aid] = {"step": 0, "message": err, "done": False, "error": err}
+            _set(0, err, error=err)
             notifier.notify_slave_error(acc.label, aid, err)
             return {"status": "error", "error": err}
 
@@ -1284,24 +1307,30 @@ class CopyRouter:
 
     def _ensure_slave_account(self, acc) -> bool:
         """
-        Guarantee MT5 is connected to this slave's account. Caller must hold _mt5_lock.
-        Uses pathless mt5.initialize() (path-based init doesn't work on this host).
+        Guarantee MT5 IPC is pointing at this slave's dedicated terminal.
+        Caller must hold _mt5_lock.  With per-account terminals, no login
+        switching is needed — just switch the IPC path.
         """
         try:
             info = mt5.account_info()
             if info and info.login == acc.login:
-                return True
+                return True   # already on the right terminal
         except Exception:
             pass
+
+        default_path = "C:\\Program Files\\MetaTrader 5\\terminal64.exe"
+        terminal = acc.terminal_path
+
+        if terminal and terminal not in (default_path, "virtual", "", None):
+            # Switch IPC to this slave's dedicated portable terminal
+            return self._switch_terminal(terminal)
+
+        # Fallback for accounts not yet provisioned (should not normally happen)
+        _pwd = db.get_slave_password(acc.account_id) or acc.password
         if not mt5.terminal_info():
             if not mt5.initialize(timeout=60_000):
                 return False
-        info = mt5.account_info()
-        if info and info.login == acc.login:
-            return True
-        # Account switch — may block for up to ~100 s; caller runs this in a thread executor
-        # via provision_slave() for any blocking scenario.
-        return bool(mt5.login(acc.login, password=acc.password, server=acc.server))
+        return bool(mt5.login(acc.login, password=_pwd, server=acc.server))
 
     def _switch_terminal(self, terminal_path: str) -> bool:
         """Switch MT5 IPC connection to a specific terminal. Caller must hold _mt5_lock."""

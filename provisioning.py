@@ -146,31 +146,22 @@ async def provision_account(
     role: str = "slave",  # "master_watcher" or "slave"
 ) -> dict:
     """
-    Full provisioning flow:
-      1. Copy golden image (idempotent)
+    Provisioning flow:
+      1. Copy golden image to C:\\MT5-Slaves\\{account_id}\\ (idempotent)
       2. Launch terminal in portable mode
-      3. Wait for IPC ready + login verified
-      4. Return status dict
+      3. Sleep briefly so the terminal window can open
 
-    The caller (router.py) then:
-      - Saves terminal_path to the DB
-      - Registers the worker in mt5_workers
+    IPC readiness is NOT verified here — the caller (watcher for masters,
+    worker loop for slaves) retries via mt5.initialize(path=...) under the
+    shared _mt5_lock. This keeps MT5 singleton access serialised.
     """
     try:
         copy_golden_image(account_id)
         launch_terminal(account_id)
-
-        # Give the terminal a few seconds to open its window before probing IPC
-        await asyncio.sleep(8)
-
-        ok = await wait_for_ipc(account_id, login, password, server)
+        # Give the terminal ~12 s to open its window before the first IPC probe
+        await asyncio.sleep(12)
         path = str(terminal_exe(account_id))
-
-        if ok:
-            return {"status": "ready", "terminal_path": path, "account_id": account_id}
-        return {"status": "timeout", "terminal_path": path, "account_id": account_id,
-                "error": "IPC did not become ready within timeout"}
-
+        return {"status": "launched", "terminal_path": path, "account_id": account_id}
     except Exception as exc:
         logger.error(f"[provision] {account_id}: provisioning failed: {exc}")
         return {"status": "error", "account_id": account_id, "error": str(exc)}
