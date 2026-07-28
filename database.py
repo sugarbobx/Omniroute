@@ -867,11 +867,12 @@ def get_next_magic_number() -> int:
     """Return the next available magic number (max across all accounts + 1, floor 1000)."""
     with get_conn() as conn:
         row_m = conn.execute("SELECT MAX(magic_number) FROM masters").fetchone()
-        row_b = conn.execute("SELECT MAX(magic_number) FROM virtual_bots").fetchone()
-    current_max = max(
-        (row_m[0] or 0),
-        (row_b[0] or 0),
-    )
+        try:
+            row_b = conn.execute("SELECT MAX(magic_number) FROM virtual_bots").fetchone()
+            bots_max = row_b[0] or 0
+        except Exception:
+            bots_max = 0
+    current_max = max((row_m[0] or 0), bots_max)
     return max(1000, current_max + 1)
 
 

@@ -2257,7 +2257,13 @@ async function withBtn(btn, loadingText, fn) {
   if (!btn || btn.disabled) return;
   const orig = btn.textContent;
   btn.disabled = true; btn.textContent = loadingText;
-  try { await fn(); } finally { btn.disabled = false; btn.textContent = orig; }
+  try {
+    await fn();
+  } catch(e) {
+    toast(e.message || 'Something went wrong', 'error');
+  } finally {
+    btn.disabled = false; btn.textContent = orig;
+  }
 }
 
 function togglePw(inputId, btn) {
