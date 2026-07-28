@@ -320,13 +320,16 @@ async def add_account(req: AddAccountRequest, request: Request):
     session = _session_from_request(request)
     owner_id = session["user_id"] if session else None
     if req.role == AccountRole.MASTER:
-        if req.magic_number is None:
-            raise HTTPException(400, "magic_number required for master")
+        magic = req.magic_number
+        if magic is None:
+            magic = db.get_next_magic_number()
+            while magic in router._magic_index:
+                magic += 1
         # terminal_path is assigned by provisioning — users never set it
         account = MasterAccount(
             label=req.label, login=req.login, password=req.password,
             investor_password=req.investor_password,
-            server=req.server, magic_number=req.magic_number, symbol_map=req.symbol_map,
+            server=req.server, magic_number=magic, symbol_map=req.symbol_map,
         )
         return await router.add_master(account, owner_user_id=owner_id)
     else:

@@ -685,8 +685,8 @@ select.fi option{background:var(--bg2);}
       <div class="fg"><label class="fl" for="f-server">Broker Server *</label><input class="fi" id="f-server" placeholder="BrokerName-Live01"/></div>
       <div id="master-fields">
         <div class="fg">
-          <label class="fl" for="f-magic">Magic Number * <div class="tip"><div class="tip-icon">?</div><div class="tip-box">Set this same number in your Master EA's Magic Number input. When the EA fires a signal with this number, the bridge routes it to linked slaves.</div></div></label>
-          <input class="fi" id="f-magic" type="number" placeholder="e.g. 111"/>
+          <label class="fl" for="f-magic">Magic Number <div class="tip"><div class="tip-icon">?</div><div class="tip-box">Leave blank to auto-assign. If you use a custom MT5 EA that sends signals, enter the EA's magic number here so the copier can match them.</div></div></label>
+          <input class="fi" id="f-magic" type="number" placeholder="Auto-assigned"/>
         </div>
         <div class="fg">
           <label class="fl" for="f-inv-pass">Investor Password <div class="tip"><div class="tip-icon">?</div><div class="tip-box">Read-only investor password for the watcher session. The watcher uses this to monitor positions without trade access.</div></div></label>
@@ -2098,9 +2098,9 @@ async function addAccount(){
   if(!wsActive&&!BRIDGE) return toast('Connect to bridge first','error');
   const payload={role:currentRole,label,login,password:pass,server};
   if(currentRole==='master'){
-    const magic=parseInt(document.getElementById('f-magic').value);
-    if(!magic) return toast('Magic number is required for master','error');
-    payload.magic_number=magic;
+    const magicRaw=document.getElementById('f-magic').value;
+    const magic=magicRaw?parseInt(magicRaw):null;
+    if(magic) payload.magic_number=magic;  // omit → server auto-assigns
     const invPass=document.getElementById('f-inv-pass')?.value;
     if(invPass) payload.investor_password=invPass;
   } else {

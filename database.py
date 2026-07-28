@@ -826,6 +826,12 @@ def save_master(m: MasterAccount, owner_user_id: Optional[str] = None):
     if hasattr(m, "investor_password") and m.investor_password:
         inv_enc = crypto.encrypt_password(m.investor_password) if not crypto.is_encrypted(m.investor_password) else m.investor_password
     with get_conn() as conn:
+        # Clear any disabled records holding the same magic_number so the UNIQUE
+        # constraint doesn't block inserting a new active master with that magic.
+        conn.execute(
+            "DELETE FROM masters WHERE magic_number=? AND enabled=0 AND master_id!=?",
+            (m.magic_number, m.master_id),
+        )
         conn.execute("""
             INSERT INTO masters
               (master_id,label,login,password,password_enc,investor_password,investor_password_enc,
@@ -855,6 +861,18 @@ def load_all_masters() -> list[MasterAccount]:
     with get_conn() as conn:
         rows = conn.execute("SELECT * FROM masters WHERE enabled=1").fetchall()
     return [_row_to_master(r) for r in rows]
+
+
+def get_next_magic_number() -> int:
+    """Return the next available magic number (max across all accounts + 1, floor 1000)."""
+    with get_conn() as conn:
+        row_m = conn.execute("SELECT MAX(magic_number) FROM masters").fetchone()
+        row_b = conn.execute("SELECT MAX(magic_number) FROM virtual_bots").fetchone()
+    current_max = max(
+        (row_m[0] or 0),
+        (row_b[0] or 0),
+    )
+    return max(1000, current_max + 1)
 
 
 def delete_master(master_id: str):

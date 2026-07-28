@@ -123,8 +123,9 @@ class MasterWatcher:
 
         while not self._stop_event.is_set():
             try:
-                new_snapshot = await self._locked_poll()
+                new_snapshot, info = await self._locked_poll()
                 if new_snapshot is not None:
+                    self._update_router_state(info)
                     await self._process_diff(self._snapshot, new_snapshot)
                     self._snapshot = new_snapshot
                 else:
@@ -137,18 +138,29 @@ class MasterWatcher:
 
         logger.info(f"[watcher:{self.master_id}] stopped")
 
+    def _update_router_state(self, info) -> None:
+        """Push latest equity/balance/ping into the router's in-memory state."""
+        state = self.router.masters.get(self.master_id)
+        if not state:
+            return
+        from datetime import datetime as _dt
+        state.last_ping = _dt.utcnow()
+        if info is not None:
+            state.equity  = float(info.equity)
+            state.balance = float(info.balance)
+
     # ── Lock-guarded MT5 access ───────────────────────────────────────────────
 
-    async def _locked_poll(self) -> Optional[dict[int, dict]]:
-        """Acquire the shared lock, switch to the master terminal, read positions."""
+    async def _locked_poll(self) -> tuple[Optional[dict[int, dict]], object]:
+        """Acquire the shared lock, switch to the master terminal, read positions + account info."""
         if not MT5_AVAILABLE:
-            return {}
+            return {}, None
         loop = asyncio.get_event_loop()
         lock = self._mt5_lock or asyncio.Lock()
         async with lock:
             ok = await loop.run_in_executor(None, self._connect_once)
             if not ok:
-                return None
+                return None, None
             return await loop.run_in_executor(None, self._read_snapshot)
 
     def _connect_once(self) -> bool:
@@ -182,9 +194,10 @@ class MasterWatcher:
             logger.debug(f"[watcher:{self.master_id}] _connect_once: {exc}")
             return False
 
-    def _read_snapshot(self) -> Optional[dict[int, dict]]:
-        """Return current snapshot. MT5 must already be connected (called under lock)."""
+    def _read_snapshot(self) -> tuple[Optional[dict[int, dict]], object]:
+        """Return (positions_snapshot, account_info). MT5 must already be connected (called under lock)."""
         try:
+            info      = mt5.account_info()
             positions = mt5.positions_get() or []
             orders    = mt5.orders_get()    or []
             snapshot: dict[int, dict] = {}
@@ -194,10 +207,10 @@ class MasterWatcher:
             for o in orders:
                 d = _order_to_dict(o)
                 snapshot[d["ticket"]] = d
-            return snapshot
+            return snapshot, info
         except Exception as exc:
             logger.error(f"[watcher:{self.master_id}] _read_snapshot: {exc}")
-            return None
+            return None, None
 
     # ── Baseline ──────────────────────────────────────────────────────────────
 
@@ -207,9 +220,10 @@ class MasterWatcher:
         These tickets will never become trade intents — only new changes from
         this point forward are actionable.
         """
-        snap = await self._locked_poll()
+        snap, info = await self._locked_poll()
         if snap is None:
             snap = {}
+        self._update_router_state(info)
 
         persisted = db.get_watcher_baseline(self.master_id)
         combined  = set(snap.keys()) | persisted
