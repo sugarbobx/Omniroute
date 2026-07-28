@@ -685,10 +685,6 @@ select.fi option{background:var(--bg2);}
       <div class="fg"><label class="fl" for="f-server">Broker Server *</label><input class="fi" id="f-server" placeholder="BrokerName-Live01"/></div>
       <div id="master-fields">
         <div class="fg">
-          <label class="fl" for="f-magic">Magic Number <div class="tip"><div class="tip-icon">?</div><div class="tip-box">Leave blank to auto-assign. If you use a custom MT5 EA that sends signals, enter the EA's magic number here so the copier can match them.</div></div></label>
-          <input class="fi" id="f-magic" type="number" placeholder="Auto-assigned"/>
-        </div>
-        <div class="fg">
           <label class="fl" for="f-inv-pass">Investor Password <div class="tip"><div class="tip-icon">?</div><div class="tip-box">Read-only investor password for the watcher session. The watcher uses this to monitor positions without trade access.</div></div></label>
           <div class="pw-wrap">
             <input class="fi" id="f-inv-pass" type="password" placeholder="Optional — read-only password"/>
@@ -1359,7 +1355,6 @@ select.fi option{background:var(--bg2);}
         <div class="pw-wrap"><input class="fi" id="em-password" type="password" placeholder="leave blank to keep current"/>
         <button type="button" class="pw-toggle" onclick="togglePw('em-password',this)" aria-label="Show password">👁</button></div>
       </div>
-      <div class="fg"><label class="fl" for="em-magic">Magic Number</label><input class="fi" id="em-magic" type="number" placeholder="100001"/></div>
       <div class="fg"><label class="fl" for="em-inv-pass">Investor Password</label>
         <div class="pw-wrap"><input class="fi" id="em-inv-pass" type="password" placeholder="leave blank to keep current"/>
         <button type="button" class="pw-toggle" onclick="togglePw('em-inv-pass',this)" aria-label="Show password">👁</button></div>
@@ -2098,9 +2093,6 @@ async function addAccount(){
   if(!wsActive&&!BRIDGE) return toast('Connect to bridge first','error');
   const payload={role:currentRole,label,login,password:pass,server};
   if(currentRole==='master'){
-    const magicRaw=document.getElementById('f-magic').value;
-    const magic=magicRaw?parseInt(magicRaw):null;
-    if(magic) payload.magic_number=magic;  // omit → server auto-assigns
     const invPass=document.getElementById('f-inv-pass')?.value;
     if(invPass) payload.investor_password=invPass;
   } else {
@@ -2111,7 +2103,7 @@ async function addAccount(){
   const btn = document.getElementById('add-account-btn');
   await withBtn(btn, 'Adding…', async () => {
     const result = await apiFetch('/account','POST',payload);
-    ['f-label','f-login','f-pass','f-server','f-magic','f-inv-pass','f-maxlot','f-mult'].forEach(id=>{ const e=document.getElementById(id); if(e) e.value=''; });
+    ['f-label','f-login','f-pass','f-server','f-inv-pass','f-maxlot','f-mult'].forEach(id=>{ const e=document.getElementById(id); if(e) e.value=''; });
     await refreshAll();
     if(currentRole==='slave' && result.account_id){
       toast(`Slave "${label}" added — provisioning MT5 terminal…`,'info');
@@ -3360,7 +3352,6 @@ async function openEditMaster(id){
     document.getElementById('em-login').value=data.login||'';
     document.getElementById('em-server').value=data.server||'';
     document.getElementById('em-password').value='';
-    document.getElementById('em-magic').value=data.magic_number||'';
     document.getElementById('em-inv-pass').value='';
     openModal('edit-master-modal');
   }catch(e){toast('Failed to load master details','error');}
@@ -3373,13 +3364,11 @@ async function saveEditMaster(){
   const login=document.getElementById('em-login').value;
   const server=document.getElementById('em-server').value.trim();
   const password=document.getElementById('em-password').value;
-  const magic=document.getElementById('em-magic').value;
   const invPass=document.getElementById('em-inv-pass').value;
   if(label) payload.label=label;
   if(login) payload.login=parseInt(login);
   if(server) payload.server=server;
   if(password) payload.password=password;
-  if(magic) payload.magic_number=parseInt(magic);
   if(invPass) payload.investor_password=invPass;
   try{
     await apiFetch(`/masters/${id}`,'PUT',payload);
