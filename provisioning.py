@@ -71,17 +71,32 @@ def copy_golden_image(account_id: str) -> Path:
     return dest
 
 
-def launch_terminal(account_id: str) -> subprocess.Popen:
-    """Launch the account's terminal in portable mode. Returns the Popen handle."""
+def launch_terminal(
+    account_id: str,
+    login: int = 0,
+    password: str = "",
+    server: str = "",
+) -> subprocess.Popen:
+    """
+    Launch the account's terminal in portable mode.
+    Passing login/password/server suppresses the MT5 login dialog and lets
+    the terminal authenticate automatically so the IPC dispatcher starts
+    without any manual interaction on the VPS.
+    """
     exe = terminal_exe(account_id)
     if not exe.exists():
         raise RuntimeError(f"Terminal not provisioned for {account_id}: {exe}")
 
-    # /portable keeps all settings/data in the terminal's own folder
     cmd = [str(exe), "/portable"]
+    if login and password and server:
+        cmd += [f"/login:{login}", f"/password:{password}", f"/server:{server}"]
+        logger.info(f"[provision] {account_id}: launching with auto-login login={login} server={server}")
+    else:
+        logger.info(f"[provision] {account_id}: launching without auto-login (no credentials provided)")
+
     proc = subprocess.Popen(cmd, cwd=str(terminal_dir(account_id)))
     _processes[account_id] = proc
-    logger.info(f"[provision] {account_id}: launched terminal PID {proc.pid}")
+    logger.info(f"[provision] {account_id}: terminal PID {proc.pid}")
     return proc
 
 
@@ -157,9 +172,10 @@ async def provision_account(
     """
     try:
         copy_golden_image(account_id)
-        launch_terminal(account_id)
-        # Give the terminal ~12 s to open its window before the first IPC probe
-        await asyncio.sleep(12)
+        launch_terminal(account_id, login=login, password=password, server=server)
+        # Wait for the terminal to start and connect to the broker.
+        # First launch takes ~30s (broker handshake + data download); subsequent launches are faster.
+        await asyncio.sleep(30)
         path = str(terminal_exe(account_id))
         return {"status": "launched", "terminal_path": path, "account_id": account_id}
     except Exception as exc:
