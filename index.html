@@ -2251,7 +2251,7 @@ async function apiFetch(path,method='GET',body=null){
 // ══════════════════════════════════════════════════════════════════════
 function esc(s){ if(!s) return ''; return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;'); }
 function fmt(n){ return n!=null?Number(n).toLocaleString('en',{minimumFractionDigits:2,maximumFractionDigits:2}):'0.00'; }
-function relTime(iso){ const s=Math.floor((Date.now()-new Date(iso))/1000); if(s<5) return 'just now'; if(s<60) return `${s}s ago`; if(s<3600) return `${Math.floor(s/60)}m ago`; return `${Math.floor(s/3600)}h ago`; }
+function relTime(iso){ if(!iso) return '—'; const utc=iso.endsWith('Z')||iso.includes('+') ? iso : iso+'Z'; const s=Math.floor((Date.now()-new Date(utc))/1000); if(s<5) return 'just now'; if(s<60) return `${s}s ago`; if(s<3600) return `${Math.floor(s/60)}m ago`; return `${Math.floor(s/3600)}h ago`; }
 
 async function withBtn(btn, loadingText, fn) {
   if (!btn || btn.disabled) return;

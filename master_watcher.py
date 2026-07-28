@@ -175,23 +175,23 @@ class MasterWatcher:
                 return True   # already on this account
 
             kwargs: dict = dict(login=self.login, password=self.investor_password,
-                                server=self.server, timeout=60_000)
+                                server=self.server, timeout=8_000)
             if self.terminal_path:
                 kwargs["path"] = self.terminal_path
 
             if not mt5.initialize(**kwargs):
-                logger.debug(f"[watcher:{self.master_id}] initialize failed: {mt5.last_error()}")
+                logger.info(f"[watcher:{self.master_id}] IPC not ready: {mt5.last_error()} — retrying in {POLL_INTERVAL}s")
                 return False
 
             info = mt5.account_info()
             if info and info.login == self.login:
-                logger.info(f"[watcher:{self.master_id}] connected to login={self.login} server={self.server}")
+                logger.info(f"[watcher:{self.master_id}] connected to login={self.login} server={self.server} equity={info.equity}")
                 return True
 
-            logger.debug(f"[watcher:{self.master_id}] login mismatch after initialize")
+            logger.info(f"[watcher:{self.master_id}] login mismatch after initialize (got {info.login if info else None}, expected {self.login})")
             return False
         except Exception as exc:
-            logger.debug(f"[watcher:{self.master_id}] _connect_once: {exc}")
+            logger.info(f"[watcher:{self.master_id}] _connect_once error: {exc}")
             return False
 
     def _read_snapshot(self) -> tuple[Optional[dict[int, dict]], object]:
